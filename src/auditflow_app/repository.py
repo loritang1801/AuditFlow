@@ -132,9 +132,20 @@ class AuditFlowRepository(Protocol):
         evidence_type: str,
         summary: str,
         artifact_id: str | None,
+        normalized_artifact_id: str | None,
         source_locator: str | None,
         captured_at: datetime | None,
+        chunk_texts: list[str] | None = None,
         metadata_update: dict[str, object] | None = None,
+    ) -> None: ...
+
+    def upsert_artifact_blob(
+        self,
+        *,
+        artifact_id: str,
+        artifact_type: str,
+        content_text: str,
+        metadata_payload: dict[str, object] | None = None,
     ) -> None: ...
 
     def list_narratives(
@@ -286,11 +297,24 @@ class ReviewDecisionRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 
 
+class ArtifactBlobRow(Base):
+    __tablename__ = "auditflow_artifact_blob"
+
+    artifact_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    artifact_type: Mapped[str] = mapped_column(String(80))
+    content_text: Mapped[str] = mapped_column(Text)
+    metadata_payload: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+
+
 class EvidenceRow(Base):
     __tablename__ = "auditflow_evidence"
 
     evidence_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     audit_cycle_id: Mapped[str] = mapped_column(String(255), index=True)
+    source_artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    normalized_artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     title: Mapped[str] = mapped_column(String(255))
     evidence_type: Mapped[str] = mapped_column(String(50))
     parse_status: Mapped[str] = mapped_column(String(50))
@@ -440,6 +464,8 @@ class SqlAlchemyAuditFlowRepository:
                 EvidenceRow(
                     evidence_id="evidence-1",
                     audit_cycle_id="cycle-1",
+                    source_artifact_id=None,
+                    normalized_artifact_id=None,
                     title="Jira Access Review Ticket",
                     evidence_type="ticket",
                     parse_status="parsed",
@@ -912,8 +938,10 @@ class SqlAlchemyAuditFlowRepository:
         evidence_type: str,
         summary: str,
         artifact_id: str | None,
+        normalized_artifact_id: str | None,
         source_locator: str | None,
         captured_at: datetime | None,
+        chunk_texts: list[str] | None = None,
         metadata_update: dict[str, object] | None = None,
     ) -> None:
         with self.session_factory.begin() as session:
@@ -926,19 +954,32 @@ class SqlAlchemyAuditFlowRepository:
             source_row.latest_workflow_run_id = workflow_run_id
             source_row.last_synced_at = now
             source_row.updated_at = now
+            source_row.artifact_id = artifact_id
             merged_metadata = dict(source_row.metadata_payload or {})
             if metadata_update:
                 merged_metadata.update(metadata_update)
             source_row.metadata_payload = merged_metadata
 
-            evidence_row = session.scalars(
-                select(EvidenceRow).where(EvidenceRow.summary == summary).where(EvidenceRow.audit_cycle_id == cycle_id)
-            ).first()
+            evidence_rows = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.audit_cycle_id == cycle_id)
+            ).all()
+            evidence_row = next(
+                (
+                    row
+                    for row in evidence_rows
+                    if isinstance(row.source_payload, dict)
+                    and row.source_payload.get("evidence_source_id") == evidence_source_id
+                ),
+                None,
+            )
+            normalized_chunks = chunk_texts or [summary]
             if evidence_row is None:
                 evidence_id = f"evidence-{uuid4().hex[:10]}"
                 evidence_row = EvidenceRow(
                     evidence_id=evidence_id,
                     audit_cycle_id=cycle_id,
+                    source_artifact_id=artifact_id,
+                    normalized_artifact_id=normalized_artifact_id,
                     title=title,
                     evidence_type=evidence_type,
                     parse_status="parsed",
@@ -948,17 +989,40 @@ class SqlAlchemyAuditFlowRepository:
                         "source_type": source_row.source_type,
                         "source_locator": source_locator,
                         "artifact_id": artifact_id,
+                        "normalized_artifact_id": normalized_artifact_id,
                         "evidence_source_id": evidence_source_id,
                     },
                 )
                 session.add(evidence_row)
+            else:
+                evidence_row.source_artifact_id = artifact_id
+                evidence_row.normalized_artifact_id = normalized_artifact_id
+                evidence_row.title = title
+                evidence_row.evidence_type = evidence_type
+                evidence_row.parse_status = "parsed"
+                evidence_row.captured_at = self._normalize_timestamp(captured_at) or now
+                evidence_row.summary = summary
+                evidence_row.source_payload = {
+                    "source_type": source_row.source_type,
+                    "source_locator": source_locator,
+                    "artifact_id": artifact_id,
+                    "normalized_artifact_id": normalized_artifact_id,
+                    "evidence_source_id": evidence_source_id,
+                }
+                existing_chunks = session.scalars(
+                    select(EvidenceChunkRow).where(EvidenceChunkRow.evidence_id == evidence_row.evidence_id)
+                ).all()
+                for chunk_row in existing_chunks:
+                    session.delete(chunk_row)
+
+            for chunk_index, chunk_text in enumerate(normalized_chunks):
                 session.add(
                     EvidenceChunkRow(
                         chunk_id=f"chunk-{uuid4().hex[:10]}",
-                        evidence_id=evidence_id,
-                        chunk_index=0,
-                        section_label="Summary",
-                        text_excerpt=summary,
+                        evidence_id=evidence_row.evidence_id,
+                        chunk_index=chunk_index,
+                        section_label=f"Chunk {chunk_index + 1}",
+                        text_excerpt=chunk_text,
                     )
                 )
 
@@ -988,6 +1052,34 @@ class SqlAlchemyAuditFlowRepository:
             if cycle_row.cycle_status == "exported":
                 cycle_row.cycle_status = "pending_review"
                 cycle_row.coverage_status = "pending_review"
+
+    def upsert_artifact_blob(
+        self,
+        *,
+        artifact_id: str,
+        artifact_type: str,
+        content_text: str,
+        metadata_payload: dict[str, object] | None = None,
+    ) -> None:
+        with self.session_factory.begin() as session:
+            now = self._utcnow_naive()
+            row = session.get(ArtifactBlobRow, artifact_id)
+            if row is None:
+                session.add(
+                    ArtifactBlobRow(
+                        artifact_id=artifact_id,
+                        artifact_type=artifact_type,
+                        content_text=content_text,
+                        metadata_payload=dict(metadata_payload or {}),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                return
+            row.artifact_type = artifact_type
+            row.content_text = content_text
+            row.metadata_payload = dict(metadata_payload or {})
+            row.updated_at = now
 
     def review_mapping(self, mapping_id: str, command: MappingReviewCommand) -> MappingReviewResponse:
         with self.session_factory.begin() as session:

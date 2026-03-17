@@ -5,13 +5,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from sqlalchemy import select
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from auditflow_app.bootstrap import build_app_service
-from auditflow_app.repository import ReviewDecisionRow
+from auditflow_app.repository import ArtifactBlobRow, EvidenceChunkRow, EvidenceRow, ReviewDecisionRow
 from auditflow_app.sample_payloads import (
     cycle_create_command,
     cycle_processing_command,
@@ -148,6 +150,53 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(duplicate.evidence_source_ids, [])
         self.assertEqual(imports.total_count, 2)
         self.assertEqual(dispatch.dispatched_count, 1)
+
+    def test_import_processing_persists_artifact_backed_evidence_and_chunks(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        accepted = service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-rich-1",
+                display_name="Privileged Access Review",
+                artifact_text=(
+                    "Privileged Access Review\n\n"
+                    "Owner: Security Engineering\n"
+                    "Review window: 2026-Q1\n"
+                    "All production administrators were reviewed.\n\n"
+                    "Findings:\n"
+                    "- Two stale contractor accounts were removed.\n"
+                    "- Break-glass access remained limited to on-call leads."
+                ),
+            ),
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-rich-1")
+            ).first()
+            self.assertIsNotNone(evidence_row)
+            artifact_row = session.get(ArtifactBlobRow, "artifact-upload-rich-1")
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-rich-1-normalized")
+            chunk_rows = session.scalars(
+                select(EvidenceChunkRow)
+                .where(EvidenceChunkRow.evidence_id == evidence_row.evidence_id)
+                .order_by(EvidenceChunkRow.chunk_index.asc())
+            ).all()
+
+        self.assertEqual(accepted.accepted_count, 1)
+        self.assertIsNotNone(artifact_row)
+        self.assertIsNotNone(normalized_row)
+        self.assertGreaterEqual(len(chunk_rows), 2)
+        self.assertIn("Privileged Access Review", artifact_row.content_text)
+        self.assertEqual(evidence_row.normalized_artifact_id, "artifact-upload-rich-1-normalized")
+
+        evidence = service.get_evidence(evidence_row.evidence_id)
+        self.assertEqual(evidence.source["artifact_id"], "artifact-upload-rich-1")
+        self.assertEqual(evidence.source["normalized_artifact_id"], "artifact-upload-rich-1-normalized")
+        self.assertGreaterEqual(len(evidence.chunks), 2)
 
     def test_mapping_and_gap_reviews_append_review_decision_audit_rows(self) -> None:
         service = build_app_service()

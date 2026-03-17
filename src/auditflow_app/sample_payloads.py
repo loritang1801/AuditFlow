@@ -101,6 +101,15 @@ def upload_import_command(
     artifact_id: str = "artifact-upload-1",
     display_name: str = "Quarterly Access Review Export",
     evidence_type_hint: str = "report",
+    artifact_text: str | None = (
+        "Quarterly Access Review Export\n\n"
+        "Control owner: Security Engineering\n"
+        "Review period: 2026-Q1\n"
+        "Result: All privileged access assignments were reviewed and approved.\n\n"
+        "Reviewer notes:\n"
+        "- Production admins remain limited to the platform team.\n"
+        "- Two stale contractor accounts were removed before sign-off."
+    ),
 ) -> dict:
     return {
         "workflow_run_id": workflow_run_id,
@@ -109,6 +118,7 @@ def upload_import_command(
         "captured_at": "2026-03-16T09:00:00Z",
         "evidence_type_hint": evidence_type_hint,
         "source_locator": "uploads/q1-access-review.csv",
+        "artifact_text": artifact_text,
     }
 
 

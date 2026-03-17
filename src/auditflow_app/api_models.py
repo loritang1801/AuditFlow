@@ -192,6 +192,7 @@ class UploadImportCommand(AuditFlowModel):
     captured_at: datetime | None = None
     evidence_type_hint: str | None = None
     source_locator: str | None = None
+    artifact_text: str | None = None
     organization_id: str = "org-1"
     workspace_id: str = "ws-1"
 

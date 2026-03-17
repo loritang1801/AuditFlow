@@ -39,12 +39,13 @@ Implemented:
 1. Upload/Jira/Confluence imports enqueue outbox jobs.
 2. Import worker dispatches connector-specific handlers.
 3. Duplicate upload and connector sources now collapse at import acceptance time via source fingerprints and stable source keys.
+4. Import processing now persists raw/normalized artifact text blobs and multi-chunk evidence rows for downstream review.
 
 Missing or partial:
 
-1. No real artifact-backed parsing pipeline yet.
-2. No OCR/chunking/indexing persistence path yet.
-3. External connectors use synthetic payload normalization rather than live pulls.
+1. No OCR or file-format-specific parser pipeline yet.
+2. No embedding/index persistence path yet.
+3. External connectors still use synthetic payload capture rather than live pulls.
 
 ### 4. Reviewer Workflow and Audit Trail
 

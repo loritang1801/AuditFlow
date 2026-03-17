@@ -37,10 +37,20 @@ class UploadImportHandler:
     def normalize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
         display_name = str(payload["display_name"])
+        artifact_text = str(
+            payload.get("artifact_text")
+            or (
+                f"{display_name}\n\n"
+                f"Source locator: {payload.get('source_locator') or 'upload'}\n"
+                "Uploaded evidence was received for audit review.\n"
+                "Control owner should confirm the latest execution evidence."
+            )
+        )
         normalized["extracted_text_or_summary"] = (
-            f"Uploaded evidence '{display_name}' was received and queued for reviewer confirmation."
+            artifact_text.splitlines()[0]
         )
         normalized["control_text"] = "Review uploaded evidence and verify the latest control execution."
+        normalized["artifact_text"] = artifact_text
         normalized["allowed_evidence_types"] = [payload.get("evidence_type", "document")]
         normalized["metadata_update"] = {
             "handler_name": "upload",
@@ -56,10 +66,18 @@ class JiraImportHandler:
     def normalize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
         locator = str(payload.get("source_locator") or payload["display_name"])
+        artifact_text = (
+            f"Jira issue evidence\n\n"
+            f"Issue locator: {locator}\n"
+            f"Display name: {payload['display_name']}\n"
+            "Issue imported for control verification and reviewer confirmation.\n"
+            "Check approval comments, assignee history, and linked remediation notes."
+        )
         normalized["extracted_text_or_summary"] = (
-            f"Imported Jira issue {locator} as evidence for access review or audit activity."
+            artifact_text.splitlines()[0]
         )
         normalized["control_text"] = "Review Jira issue activity and confirm it evidences the target control."
+        normalized["artifact_text"] = artifact_text
         normalized["allowed_evidence_types"] = ["ticket"]
         normalized["metadata_update"] = {
             "handler_name": "jira",
@@ -75,10 +93,18 @@ class ConfluenceImportHandler:
     def normalize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
         locator = str(payload.get("source_locator") or payload["display_name"])
+        artifact_text = (
+            f"Confluence page evidence\n\n"
+            f"Page locator: {locator}\n"
+            f"Display name: {payload['display_name']}\n"
+            "Documentation imported as policy or procedure evidence.\n"
+            "Review the described workflow, ownership, and control checkpoints."
+        )
         normalized["extracted_text_or_summary"] = (
-            f"Imported Confluence page {locator} as policy or procedure evidence."
+            artifact_text.splitlines()[0]
         )
         normalized["control_text"] = "Review Confluence documentation and confirm it represents the governed process."
+        normalized["artifact_text"] = artifact_text
         normalized["allowed_evidence_types"] = ["document"]
         normalized["metadata_update"] = {
             "handler_name": "confluence",

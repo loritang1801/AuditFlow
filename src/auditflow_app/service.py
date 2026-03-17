@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 from typing import Any, TypeVar
@@ -34,6 +35,16 @@ from .repository import AuditFlowRepository
 from .shared_runtime import load_shared_agent_platform
 
 CommandT = TypeVar("CommandT", CycleProcessingCommand, ExportGenerationCommand)
+
+
+@dataclass(slots=True)
+class ParsedImportArtifact:
+    raw_artifact_id: str
+    normalized_artifact_id: str
+    raw_text: str
+    normalized_text: str
+    summary: str
+    chunk_texts: list[str]
 
 
 class AuditFlowAppService:
@@ -132,6 +143,7 @@ class AuditFlowAppService:
                 evidence_type=command.evidence_type_hint or "document",
                 source_locator=command.source_locator,
                 captured_at=command.captured_at,
+                artifact_text=command.artifact_text,
                 organization_id=command.organization_id,
                 workspace_id=command.workspace_id,
             )
@@ -164,6 +176,7 @@ class AuditFlowAppService:
                 evidence_type="ticket" if command.provider == "jira" else "document",
                 source_locator=selector if command.query is None else f"{command.provider}:query",
                 captured_at=None,
+                artifact_text=None,
                 organization_id=command.organization_id,
                 workspace_id=command.workspace_id,
             )
@@ -318,6 +331,7 @@ class AuditFlowAppService:
         evidence_type: str,
         source_locator: str | None,
         captured_at,
+        artifact_text: str | None,
         organization_id: str,
         workspace_id: str,
     ) -> None:
@@ -339,6 +353,7 @@ class AuditFlowAppService:
                     "display_name": display_name,
                     "evidence_type": evidence_type,
                     "source_locator": source_locator,
+                    "artifact_text": artifact_text,
                     "captured_at": (
                         captured_at.isoformat() if hasattr(captured_at, "isoformat") and captured_at is not None else None
                     ),
@@ -357,8 +372,35 @@ class AuditFlowAppService:
         artifact_id = payload.get("artifact_id")
         source_locator = payload.get("source_locator")
         evidence_type = str(payload.get("evidence_type", "document"))
+        parsed_artifact = self._parse_import_artifact(
+            source_type=source_type,
+            display_name=display_name,
+            artifact_id=(str(artifact_id) if artifact_id is not None else f"artifact-{payload['evidence_source_id']}"),
+            source_locator=(str(source_locator) if source_locator is not None else None),
+            artifact_text=(str(payload["artifact_text"]) if payload.get("artifact_text") is not None else None),
+        )
+        self.repository.upsert_artifact_blob(
+            artifact_id=parsed_artifact.raw_artifact_id,
+            artifact_type=f"{source_type}_raw",
+            content_text=parsed_artifact.raw_text,
+            metadata_payload={
+                "display_name": display_name,
+                "source_type": source_type,
+                "source_locator": source_locator,
+            },
+        )
+        self.repository.upsert_artifact_blob(
+            artifact_id=parsed_artifact.normalized_artifact_id,
+            artifact_type=f"{source_type}_normalized",
+            content_text=parsed_artifact.normalized_text,
+            metadata_payload={
+                "display_name": display_name,
+                "source_type": source_type,
+                "source_locator": source_locator,
+            },
+        )
         extracted_text_or_summary = str(
-            payload.get("extracted_text_or_summary", f"Imported {source_type}: {display_name}")
+            payload.get("extracted_text_or_summary", parsed_artifact.summary)
         )
         control_text = str(
             payload.get("control_text", "Review imported evidence for control coverage.")
@@ -372,11 +414,18 @@ class AuditFlowAppService:
                 audit_cycle_id=cycle_id,
                 source_id=str(payload["evidence_source_id"]),
                 source_type=source_type,
-                artifact_id=str(artifact_id or f"artifact-{payload['evidence_source_id']}"),
+                artifact_id=parsed_artifact.raw_artifact_id,
                 extracted_text_or_summary=extracted_text_or_summary,
                 allowed_evidence_types=allowed_evidence_types,
                 evidence_item_id=f"evidence-{uuid4().hex[:10]}",
-                evidence_chunk_refs=[],
+                evidence_chunk_refs=[
+                    {
+                        "kind": "artifact_chunk_preview",
+                        "artifact_id": parsed_artifact.normalized_artifact_id,
+                        "chunk_index": index,
+                    }
+                    for index, _chunk in enumerate(parsed_artifact.chunk_texts)
+                ],
                 in_scope_controls=["control-1"],
                 framework_name="SOC2",
                 mapping_payloads=mapping_payloads,
@@ -391,17 +440,57 @@ class AuditFlowAppService:
             workflow_run_id=workflow_run_id,
             title=display_name,
             evidence_type=evidence_type,
-            summary=f"Imported {source_type}: {display_name}",
-            artifact_id=(str(artifact_id) if artifact_id is not None else None),
+            summary=parsed_artifact.summary,
+            artifact_id=parsed_artifact.raw_artifact_id,
+            normalized_artifact_id=parsed_artifact.normalized_artifact_id,
             source_locator=(str(source_locator) if source_locator is not None else None),
             captured_at=(
                 datetime.fromisoformat(payload["captured_at"])
                 if payload.get("captured_at")
                 else None
             ),
+            chunk_texts=parsed_artifact.chunk_texts,
             metadata_update=metadata_update,
         )
 
     @staticmethod
     def _worker_now_utc() -> datetime:
         return datetime.now(UTC)
+
+    @staticmethod
+    def _parse_import_artifact(
+        *,
+        source_type: str,
+        display_name: str,
+        artifact_id: str,
+        source_locator: str | None,
+        artifact_text: str | None,
+    ) -> ParsedImportArtifact:
+        raw_text = (artifact_text or f"{display_name}\n\nSource: {source_locator or source_type}").strip()
+        normalized_lines = [line.strip() for line in raw_text.replace("\r\n", "\n").split("\n")]
+        normalized_text = "\n".join(normalized_lines).strip()
+        paragraphs = [part.strip() for part in normalized_text.split("\n\n") if part.strip()]
+        chunk_texts: list[str] = []
+        current_chunk = ""
+        for paragraph in paragraphs or [normalized_text]:
+            candidate = paragraph if not current_chunk else f"{current_chunk}\n\n{paragraph}"
+            if current_chunk and len(candidate) > 220:
+                chunk_texts.append(current_chunk)
+                current_chunk = paragraph
+                continue
+            current_chunk = candidate
+        if current_chunk:
+            chunk_texts.append(current_chunk)
+        if not chunk_texts:
+            chunk_texts.append(f"Imported {source_type}: {display_name}")
+        summary = chunk_texts[0].replace("\n", " ")
+        if len(summary) > 180:
+            summary = f"{summary[:177]}..."
+        return ParsedImportArtifact(
+            raw_artifact_id=artifact_id,
+            normalized_artifact_id=f"{artifact_id}-normalized",
+            raw_text=raw_text,
+            normalized_text=normalized_text or raw_text,
+            summary=summary,
+            chunk_texts=chunk_texts,
+        )
