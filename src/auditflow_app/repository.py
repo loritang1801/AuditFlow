@@ -129,7 +129,12 @@ class AuditFlowRepository(Protocol):
         severity: str | None = None,
     ) -> list[GapSummary]: ...
 
-    def list_review_queue(self, cycle_id: str) -> ReviewQueueResponse: ...
+    def list_review_queue(
+        self,
+        cycle_id: str,
+        *,
+        control_state_id: str | None = None,
+    ) -> ReviewQueueResponse: ...
 
     def list_review_decisions(
         self,
@@ -880,14 +885,21 @@ class SqlAlchemyAuditFlowRepository:
             rows = session.scalars(stmt.order_by(GapRow.updated_at.desc())).all()
             return [self._to_gap(row) for row in rows]
 
-    def list_review_queue(self, cycle_id: str) -> ReviewQueueResponse:
+    def list_review_queue(
+        self,
+        cycle_id: str,
+        *,
+        control_state_id: str | None = None,
+    ) -> ReviewQueueResponse:
         with self.session_factory() as session:
-            mapping_rows = session.scalars(
+            stmt = (
                 select(MappingRow)
                 .where(MappingRow.cycle_id == cycle_id)
                 .where(MappingRow.mapping_status.in_(("proposed", "reassigned")))
-                .order_by(MappingRow.updated_at.desc())
-            ).all()
+            )
+            if control_state_id is not None:
+                stmt = stmt.where(MappingRow.control_state_id == control_state_id)
+            mapping_rows = session.scalars(stmt.order_by(MappingRow.updated_at.desc())).all()
             items: list[ReviewQueueItem] = []
             for mapping_row in mapping_rows:
                 control_row = session.get(ControlCoverageRow, mapping_row.control_state_id)

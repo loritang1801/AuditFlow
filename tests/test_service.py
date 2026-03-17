@@ -168,6 +168,17 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(accepted.total_count, 0)
         self.assertEqual(by_control.total_count, 1)
 
+    def test_list_review_queue_supports_control_filter(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        matching = service.list_review_queue("cycle-1", control_state_id="control-state-1")
+        missing = service.list_review_queue("cycle-1", control_state_id="control-state-2")
+
+        self.assertEqual(matching.total_count, 1)
+        self.assertEqual(matching.items[0].mapping_id, "mapping-1")
+        self.assertEqual(missing.total_count, 0)
+
     def test_gap_transitions_enforce_stricter_terminal_policy(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)

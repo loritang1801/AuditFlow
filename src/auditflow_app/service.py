@@ -147,8 +147,13 @@ class AuditFlowAppService:
     ) -> list[GapSummary]:
         return self.repository.list_gaps(cycle_id, status=status, severity=severity)
 
-    def list_review_queue(self, cycle_id: str) -> ReviewQueueResponse:
-        return self.repository.list_review_queue(cycle_id)
+    def list_review_queue(
+        self,
+        cycle_id: str,
+        *,
+        control_state_id: str | None = None,
+    ) -> ReviewQueueResponse:
+        return self.repository.list_review_queue(cycle_id, control_state_id=control_state_id)
 
     def list_review_decisions(
         self,
