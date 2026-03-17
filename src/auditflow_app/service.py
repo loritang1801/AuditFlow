@@ -106,8 +106,18 @@ class AuditFlowAppService:
     def get_cycle_dashboard(self, cycle_id: str) -> AuditCycleDashboardResponse:
         return self.repository.get_cycle_dashboard(cycle_id)
 
-    def list_controls(self, cycle_id: str) -> list[ControlCoverageSummary]:
-        return self.repository.list_controls(cycle_id)
+    def list_controls(
+        self,
+        cycle_id: str,
+        *,
+        coverage_status: str | None = None,
+        search: str | None = None,
+    ) -> list[ControlCoverageSummary]:
+        return self.repository.list_controls(
+            cycle_id,
+            coverage_status=coverage_status,
+            search=search,
+        )
 
     def list_mappings(
         self,

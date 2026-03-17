@@ -129,8 +129,12 @@ def create_fastapi_app(service: AuditFlowAppService):
         return service.get_cycle_dashboard(cycle_id)
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/controls")
-    def list_controls(cycle_id: str) -> list[ControlCoverageSummary]:
-        return service.list_controls(cycle_id)
+    def list_controls(
+        cycle_id: str,
+        coverage_status: str | None = None,
+        search: str | None = None,
+    ) -> list[ControlCoverageSummary]:
+        return service.list_controls(cycle_id, coverage_status=coverage_status, search=search)
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/mappings", response_model=MappingListResponse)
     def list_mappings(

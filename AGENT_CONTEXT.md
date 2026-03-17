@@ -33,6 +33,7 @@
 - Cycle-level gap records can now be queried with status/severity filters for reviewer workbench backends
 - Review history can now be queried at the cycle level with optional mapping/gap filters for reviewer workbench backends
 - Cycle-level mapping records can now be queried with control/state filters for reviewer workbench backends
+- Control matrix queries now support `coverage_status` and `search` filters at the product layer
 - Gap transitions now enforce a stricter terminal policy: `acknowledge` only from `open`, `reopen_gap` only from `resolved`
 - `routes.py` now contains explicit domain-error-to-HTTP mapping logic for product APIs
 - Export submission now rejects cycles with no accepted mappings, open review items, stale snapshot requests, and duplicate queued exports

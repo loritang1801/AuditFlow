@@ -101,7 +101,13 @@ class AuditFlowRepository(Protocol):
 
     def get_cycle_dashboard(self, cycle_id: str) -> AuditCycleDashboardResponse: ...
 
-    def list_controls(self, cycle_id: str) -> list[ControlCoverageSummary]: ...
+    def list_controls(
+        self,
+        cycle_id: str,
+        *,
+        coverage_status: str | None = None,
+        search: str | None = None,
+    ) -> list[ControlCoverageSummary]: ...
 
     def list_mappings(
         self,
@@ -747,13 +753,33 @@ class SqlAlchemyAuditFlowRepository:
                 ),
             )
 
-    def list_controls(self, cycle_id: str) -> list[ControlCoverageSummary]:
+    def list_controls(
+        self,
+        cycle_id: str,
+        *,
+        coverage_status: str | None = None,
+        search: str | None = None,
+    ) -> list[ControlCoverageSummary]:
         with self.session_factory() as session:
-            rows = session.scalars(
-                select(ControlCoverageRow)
-                .where(ControlCoverageRow.cycle_id == cycle_id)
-                .order_by(ControlCoverageRow.control_code.asc())
-            ).all()
+            cycle_row = session.get(AuditCycleRow, cycle_id)
+            if cycle_row is None:
+                raise KeyError(cycle_id)
+            stmt = select(ControlCoverageRow).where(ControlCoverageRow.cycle_id == cycle_id)
+            if coverage_status is not None:
+                stmt = stmt.where(ControlCoverageRow.coverage_status == coverage_status)
+            rows = session.scalars(stmt.order_by(ControlCoverageRow.control_code.asc())).all()
+            if search is not None and search.strip():
+                needle = search.strip().lower()
+                catalog_by_code = {
+                    row.control_code: row
+                    for row in self._list_control_catalog(session, cycle_row.framework_name)
+                }
+                rows = [
+                    row
+                    for row in rows
+                    if needle in row.control_code.lower()
+                    or needle in str(catalog_by_code.get(row.control_code).title if row.control_code in catalog_by_code else "").lower()
+                ]
             return [self._to_control(row) for row in rows]
 
     def list_mappings(

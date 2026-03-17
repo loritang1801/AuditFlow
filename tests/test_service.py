@@ -105,6 +105,18 @@ class AuditFlowServiceTests(unittest.TestCase):
             )
         )
 
+    def test_list_controls_supports_coverage_status_and_search_filters(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        pending = service.list_controls("cycle-1", coverage_status="pending_review")
+        needs_attention = service.list_controls("cycle-1", coverage_status="needs_attention")
+        searched = service.list_controls("cycle-1", search="access")
+
+        self.assertEqual([item.control_code for item in pending], ["CC6.1"])
+        self.assertEqual(needs_attention, [])
+        self.assertEqual([item.control_code for item in searched], ["CC6.1"])
+
     def test_imports_and_gap_decision(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
