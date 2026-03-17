@@ -15,7 +15,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from auditflow_app.bootstrap import build_app_service
-from auditflow_app.repository import ArtifactBlobRow, EvidenceChunkRow, EvidenceRow, ExportPackageRow, ReviewDecisionRow
+from auditflow_app.repository import ArtifactBlobRow, EvidenceChunkRow, EvidenceRow, ExportPackageRow, MappingRow, ReviewDecisionRow
 from auditflow_app.sample_payloads import (
     cycle_create_command,
     cycle_processing_command,
@@ -192,6 +192,46 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(matching.total_count, 1)
         self.assertEqual(matching.items[0].mapping_id, "mapping-1")
         self.assertEqual(missing.total_count, 0)
+
+    def test_list_review_queue_supports_severity_filter_and_sort_modes(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with service.repository.session_factory.begin() as session:
+            session.add(
+                MappingRow(
+                    mapping_id="mapping-ranked",
+                    cycle_id="cycle-1",
+                    control_state_id="control-state-1",
+                    control_code="CC6.1",
+                    mapping_status="proposed",
+                    evidence_item_id="evidence-1",
+                    rationale_summary="Higher-ranked evidence package.",
+                    citation_refs=[
+                        {"kind": "evidence_chunk", "id": "chunk-1"},
+                        {"kind": "evidence_chunk", "id": "chunk-2"},
+                    ],
+                    reviewer_locked=False,
+                    updated_at=datetime(2026, 3, 15, 9, 0),
+                )
+            )
+
+        medium = service.list_review_queue("cycle-1", severity="medium")
+        high = service.list_review_queue("cycle-1", severity="high")
+        recent = service.list_review_queue("cycle-1", sort="recent")
+        ranking = service.list_review_queue("cycle-1", sort="ranking")
+
+        self.assertEqual(medium.total_count, 2)
+        self.assertEqual(high.total_count, 0)
+        self.assertEqual(recent.items[0].mapping_id, "mapping-1")
+        self.assertEqual(ranking.items[0].mapping_id, "mapping-ranked")
+
+    def test_list_review_queue_rejects_unknown_sort(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with self.assertRaisesRegex(ValueError, "INVALID_REVIEW_QUEUE_SORT"):
+            service.list_review_queue("cycle-1", sort="priority")
 
     def test_gap_transitions_enforce_stricter_terminal_policy(self) -> None:
         service = build_app_service()

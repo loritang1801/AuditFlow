@@ -49,6 +49,15 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
         self.assertEqual(status_code, 422)
         self.assertEqual(payload["error"]["code"], "CYCLE_NOT_READY_FOR_EXPORT")
 
+    def test_maps_invalid_review_queue_sort_to_400(self) -> None:
+        status_code, payload = map_domain_error(
+            ValueError("INVALID_REVIEW_QUEUE_SORT"),
+            path="/api/v1/auditflow/review-queue",
+        )
+
+        self.assertEqual(status_code, 400)
+        self.assertEqual(payload["error"]["code"], "INVALID_REVIEW_QUEUE_SORT")
+
 
 if __name__ == "__main__":
     unittest.main()

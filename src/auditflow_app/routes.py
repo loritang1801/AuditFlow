@@ -10,6 +10,7 @@ ERROR_STATUS_BY_CODE = {
     "EXPORT_ALREADY_RUNNING": 409,
     "SNAPSHOT_STALE": 409,
     "CYCLE_NOT_READY_FOR_EXPORT": 422,
+    "INVALID_REVIEW_QUEUE_SORT": 400,
 }
 
 from .api_models import (
@@ -172,8 +173,15 @@ def create_fastapi_app(service: AuditFlowAppService):
     def list_review_queue(
         cycle_id: str,
         control_state_id: str | None = None,
+        severity: str | None = None,
+        sort: str = "recent",
     ) -> ReviewQueueResponse:
-        return service.list_review_queue(cycle_id, control_state_id=control_state_id)
+        return service.list_review_queue(
+            cycle_id,
+            control_state_id=control_state_id,
+            severity=severity,
+            sort=sort,
+        )
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/review-decisions", response_model=ReviewDecisionListResponse)
     def list_review_decisions(
@@ -184,8 +192,18 @@ def create_fastapi_app(service: AuditFlowAppService):
         return service.list_review_decisions(cycle_id, mapping_id=mapping_id, gap_id=gap_id)
 
     @app.get("/api/v1/auditflow/review-queue", response_model=ReviewQueueResponse)
-    def list_review_queue_global(cycle_id: str) -> ReviewQueueResponse:
-        return service.list_review_queue(cycle_id)
+    def list_review_queue_global(
+        cycle_id: str,
+        control_state_id: str | None = None,
+        severity: str | None = None,
+        sort: str = "recent",
+    ) -> ReviewQueueResponse:
+        return service.list_review_queue(
+            cycle_id,
+            control_state_id=control_state_id,
+            severity=severity,
+            sort=sort,
+        )
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/imports", response_model=ImportListResponse)
     def list_imports(

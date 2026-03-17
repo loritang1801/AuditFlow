@@ -139,6 +139,8 @@ class AuditFlowRepository(Protocol):
         cycle_id: str,
         *,
         control_state_id: str | None = None,
+        severity: str | None = None,
+        sort: str = "recent",
     ) -> ReviewQueueResponse: ...
 
     def list_review_decisions(
@@ -904,6 +906,8 @@ class SqlAlchemyAuditFlowRepository:
         cycle_id: str,
         *,
         control_state_id: str | None = None,
+        severity: str | None = None,
+        sort: str = "recent",
     ) -> ReviewQueueResponse:
         with self.session_factory() as session:
             stmt = (
@@ -913,7 +917,25 @@ class SqlAlchemyAuditFlowRepository:
             )
             if control_state_id is not None:
                 stmt = stmt.where(MappingRow.control_state_id == control_state_id)
-            mapping_rows = session.scalars(stmt.order_by(MappingRow.updated_at.desc())).all()
+            if severity is not None:
+                gap_control_ids = select(GapRow.control_state_id).where(
+                    GapRow.severity == severity,
+                    GapRow.status != "resolved",
+                )
+                stmt = stmt.where(MappingRow.control_state_id.in_(gap_control_ids))
+            mapping_rows = session.scalars(stmt).all()
+            if sort == "recent":
+                mapping_rows.sort(key=lambda row: row.updated_at, reverse=True)
+            elif sort == "ranking":
+                mapping_rows.sort(
+                    key=lambda row: (
+                        len(row.citation_refs or []),
+                        row.updated_at,
+                    ),
+                    reverse=True,
+                )
+            else:
+                raise ValueError("INVALID_REVIEW_QUEUE_SORT")
             items: list[ReviewQueueItem] = []
             for mapping_row in mapping_rows:
                 control_row = session.get(ControlCoverageRow, mapping_row.control_state_id)

@@ -157,8 +157,15 @@ class AuditFlowAppService:
         cycle_id: str,
         *,
         control_state_id: str | None = None,
+        severity: str | None = None,
+        sort: str = "recent",
     ) -> ReviewQueueResponse:
-        return self.repository.list_review_queue(cycle_id, control_state_id=control_state_id)
+        return self.repository.list_review_queue(
+            cycle_id,
+            control_state_id=control_state_id,
+            severity=severity,
+            sort=sort,
+        )
 
     def list_review_decisions(
         self,
