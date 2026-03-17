@@ -302,6 +302,25 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(decision_rows[1].from_status, "acknowledged")
         self.assertEqual(decision_rows[1].to_status, "resolved")
 
+    def test_list_review_decisions_supports_cycle_and_subject_filters(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command(comment="Accepting mapped evidence."))
+        service.decide_gap("gap-1", gap_decision_command(comment="Gap is resolved."))
+
+        all_decisions = service.list_review_decisions("cycle-1")
+        mapping_decisions = service.list_review_decisions("cycle-1", mapping_id="mapping-1")
+        gap_decisions = service.list_review_decisions("cycle-1", gap_id="gap-1")
+
+        self.assertEqual(all_decisions.total_count, 2)
+        self.assertEqual(mapping_decisions.total_count, 1)
+        self.assertEqual(mapping_decisions.items[0].mapping_id, "mapping-1")
+        self.assertIsNone(mapping_decisions.items[0].gap_id)
+        self.assertEqual(gap_decisions.total_count, 1)
+        self.assertEqual(gap_decisions.items[0].gap_id, "gap-1")
+        self.assertIn("decision:resolve_gap", gap_decisions.items[0].feedback_tags)
+
     def test_process_cycle_and_load_state(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)

@@ -78,6 +78,26 @@ class ReviewQueueResponse(AuditFlowModel):
     items: list[ReviewQueueItem] = Field(default_factory=list)
 
 
+class ReviewDecisionSummary(AuditFlowModel):
+    review_decision_id: str
+    cycle_id: str
+    mapping_id: str | None = None
+    gap_id: str | None = None
+    decision: str
+    from_status: str | None = None
+    to_status: str | None = None
+    reviewer_id: str
+    comment: str | None = None
+    feedback_tags: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class ReviewDecisionListResponse(AuditFlowModel):
+    cycle_id: str
+    total_count: int
+    items: list[ReviewDecisionSummary] = Field(default_factory=list)
+
+
 class EvidenceImportSummary(AuditFlowModel):
     evidence_source_id: str
     cycle_id: str

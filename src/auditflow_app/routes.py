@@ -37,6 +37,7 @@ from .api_models import (
     MappingReviewCommand,
     MappingReviewResponse,
     NarrativeSummary,
+    ReviewDecisionListResponse,
     ReviewQueueResponse,
     UploadImportCommand,
 )
@@ -142,6 +143,14 @@ def create_fastapi_app(service: AuditFlowAppService):
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/review-queue", response_model=ReviewQueueResponse)
     def list_review_queue(cycle_id: str) -> ReviewQueueResponse:
         return service.list_review_queue(cycle_id)
+
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/review-decisions", response_model=ReviewDecisionListResponse)
+    def list_review_decisions(
+        cycle_id: str,
+        mapping_id: str | None = None,
+        gap_id: str | None = None,
+    ) -> ReviewDecisionListResponse:
+        return service.list_review_decisions(cycle_id, mapping_id=mapping_id, gap_id=gap_id)
 
     @app.get("/api/v1/auditflow/review-queue", response_model=ReviewQueueResponse)
     def list_review_queue_global(cycle_id: str) -> ReviewQueueResponse:

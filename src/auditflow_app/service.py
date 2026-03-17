@@ -31,6 +31,7 @@ from .api_models import (
     MappingReviewCommand,
     MappingReviewResponse,
     NarrativeSummary,
+    ReviewDecisionListResponse,
     ReviewQueueResponse,
     UploadImportCommand,
 )
@@ -115,6 +116,19 @@ class AuditFlowAppService:
 
     def list_review_queue(self, cycle_id: str) -> ReviewQueueResponse:
         return self.repository.list_review_queue(cycle_id)
+
+    def list_review_decisions(
+        self,
+        cycle_id: str,
+        *,
+        mapping_id: str | None = None,
+        gap_id: str | None = None,
+    ) -> ReviewDecisionListResponse:
+        return self.repository.list_review_decisions(
+            cycle_id,
+            mapping_id=mapping_id,
+            gap_id=gap_id,
+        )
 
     def list_imports(
         self,

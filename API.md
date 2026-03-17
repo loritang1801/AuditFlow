@@ -459,6 +459,21 @@ Response:
 
 - `200 OK` with paginated `ReviewQueueItem[]`
 
+### 4.12.1 `GET /api/v1/auditflow/cycles/:cycleId/review-decisions`
+
+Purpose: list immutable reviewer decisions already recorded for one cycle.
+
+Auth: `reviewer` or stronger
+
+Query params:
+
+- `mapping_id`
+- `gap_id`
+
+Response:
+
+- `200 OK` with `ReviewDecision[]`
+
 ### 4.13 `POST /api/v1/auditflow/mappings/:mappingId/review`
 
 Purpose: apply a reviewer decision to one mapping.

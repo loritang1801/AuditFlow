@@ -30,6 +30,8 @@ from .api_models import (
     MappingReviewResponse,
     MappingSummary,
     NarrativeSummary,
+    ReviewDecisionListResponse,
+    ReviewDecisionSummary,
     ReviewQueueItem,
     ReviewQueueResponse,
     UploadImportCommand,
@@ -105,6 +107,14 @@ class AuditFlowRepository(Protocol):
     def get_evidence(self, evidence_id: str) -> EvidenceDetail: ...
 
     def list_review_queue(self, cycle_id: str) -> ReviewQueueResponse: ...
+
+    def list_review_decisions(
+        self,
+        cycle_id: str,
+        *,
+        mapping_id: str | None = None,
+        gap_id: str | None = None,
+    ) -> ReviewDecisionListResponse: ...
 
     def review_mapping(self, mapping_id: str, command: MappingReviewCommand) -> MappingReviewResponse: ...
 
@@ -547,6 +557,22 @@ class SqlAlchemyAuditFlowRepository:
         )
 
     @staticmethod
+    def _to_review_decision(row: ReviewDecisionRow) -> ReviewDecisionSummary:
+        return ReviewDecisionSummary(
+            review_decision_id=row.review_decision_id,
+            cycle_id=row.cycle_id,
+            mapping_id=row.mapping_id,
+            gap_id=row.gap_id,
+            decision=row.decision,
+            from_status=row.from_status,
+            to_status=row.to_status,
+            reviewer_id=row.reviewer_id,
+            comment=row.comment,
+            feedback_tags=row.feedback_tags,
+            created_at=row.created_at,
+        )
+
+    @staticmethod
     def _to_import(row: EvidenceSourceRow) -> EvidenceImportSummary:
         return EvidenceImportSummary(
             evidence_source_id=row.evidence_source_id,
@@ -785,6 +811,26 @@ class SqlAlchemyAuditFlowRepository:
                 control_row = session.get(ControlCoverageRow, mapping_row.control_state_id)
                 items.append(self._to_review_item(mapping_row, control_row))
             return ReviewQueueResponse(cycle_id=cycle_id, total_count=len(items), items=items)
+
+    def list_review_decisions(
+        self,
+        cycle_id: str,
+        *,
+        mapping_id: str | None = None,
+        gap_id: str | None = None,
+    ) -> ReviewDecisionListResponse:
+        with self.session_factory() as session:
+            cycle_row = session.get(AuditCycleRow, cycle_id)
+            if cycle_row is None:
+                raise KeyError(cycle_id)
+            stmt = select(ReviewDecisionRow).where(ReviewDecisionRow.cycle_id == cycle_id)
+            if mapping_id is not None:
+                stmt = stmt.where(ReviewDecisionRow.mapping_id == mapping_id)
+            if gap_id is not None:
+                stmt = stmt.where(ReviewDecisionRow.gap_id == gap_id)
+            rows = session.scalars(stmt.order_by(ReviewDecisionRow.created_at.desc())).all()
+            items = [self._to_review_decision(row) for row in rows]
+            return ReviewDecisionListResponse(cycle_id=cycle_id, total_count=len(items), items=items)
 
     def list_imports(
         self,
