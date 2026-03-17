@@ -62,7 +62,7 @@ Implemented:
 
 Missing or partial:
 
-1. Mapping accepted/rejected locks plus gap acknowledge/reopen rules now exist, but richer reviewer conflict resolution is still missing.
+1. Mapping accepted/rejected locks plus gap acknowledge/reopen rules now exist, and reviewer reads/mutations are snapshot-aware, but multi-actor reviewer merge/conflict resolution is still missing.
 2. Review queue ordering is still simplified.
 
 ### 5. Retrieval, Memory, and Prompt Grounding

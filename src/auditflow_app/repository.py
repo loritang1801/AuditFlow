@@ -346,6 +346,7 @@ class MappingRow(Base):
     control_state_id: Mapped[str] = mapped_column(String(255), index=True)
     control_code: Mapped[str] = mapped_column(String(100))
     mapping_status: Mapped[str] = mapped_column(String(50))
+    snapshot_version: Mapped[int] = mapped_column(Integer, default=1)
     evidence_item_id: Mapped[str] = mapped_column(String(255))
     rationale_summary: Mapped[str] = mapped_column(Text)
     citation_refs: Mapped[list[dict]] = mapped_column(JSON)
@@ -361,6 +362,7 @@ class GapRow(Base):
     gap_type: Mapped[str] = mapped_column(String(100))
     severity: Mapped[str] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(50))
+    snapshot_version: Mapped[int] = mapped_column(Integer, default=1)
     title: Mapped[str] = mapped_column(String(255))
     recommended_action: Mapped[str] = mapped_column(Text)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
@@ -553,6 +555,7 @@ class SqlAlchemyAuditFlowRepository:
                     control_state_id="control-state-1",
                     control_code="CC6.1",
                     mapping_status="proposed",
+                    snapshot_version=1,
                     evidence_item_id="evidence-1",
                     rationale_summary="Quarterly access review evidence requires reviewer confirmation.",
                     citation_refs=[{"kind": "evidence_chunk", "id": "chunk-1"}],
@@ -567,6 +570,7 @@ class SqlAlchemyAuditFlowRepository:
                     gap_type="stale_evidence",
                     severity="medium",
                     status="acknowledged",
+                    snapshot_version=1,
                     title="Access review evidence needs current quarter refresh",
                     recommended_action="Upload the most recent quarterly access review export.",
                     resolved_at=None,
@@ -649,6 +653,7 @@ class SqlAlchemyAuditFlowRepository:
             control_state_id=row.control_state_id,
             control_code=row.control_code,
             mapping_status=row.mapping_status,
+            snapshot_version=row.snapshot_version,
             evidence_item_id=row.evidence_item_id,
             rationale_summary=row.rationale_summary,
             citation_refs=row.citation_refs,
@@ -662,6 +667,7 @@ class SqlAlchemyAuditFlowRepository:
             control_state_id=row.control_state_id,
             control_code=row.control_code,
             coverage_status=(control_row.coverage_status if control_row else "pending_review"),
+            snapshot_version=row.snapshot_version,
             evidence_item_id=row.evidence_item_id,
             rationale_summary=row.rationale_summary,
             citation_refs=row.citation_refs,
@@ -710,6 +716,7 @@ class SqlAlchemyAuditFlowRepository:
             gap_type=row.gap_type,
             severity=row.severity,
             status=row.status,
+            snapshot_version=row.snapshot_version,
             title=row.title,
             recommended_action=row.recommended_action,
             updated_at=row.updated_at,
@@ -1346,6 +1353,7 @@ class SqlAlchemyAuditFlowRepository:
                         control_state_id=control_row.control_state_id,
                         control_code=control_row.control_code,
                         mapping_status="proposed",
+                        snapshot_version=max(cycle_row.current_snapshot_version, 1),
                         evidence_item_id=evidence_row.evidence_id,
                         rationale_summary=f"Imported evidence '{title}' requires reviewer confirmation.",
                         citation_refs=[{"kind": "evidence_item", "id": evidence_row.evidence_id}],
@@ -1403,6 +1411,11 @@ class SqlAlchemyAuditFlowRepository:
                 command.expected_updated_at,
             ):
                 raise ValueError("CONFLICT_STALE_RESOURCE")
+            self._validate_review_snapshot(
+                item_snapshot_version=mapping_row.snapshot_version,
+                cycle_snapshot_version=cycle_row.current_snapshot_version,
+                expected_snapshot_version=command.expected_snapshot_version,
+            )
             if mapping_row.reviewer_locked and mapping_row.mapping_status in {"accepted", "rejected"}:
                 raise ValueError("MAPPING_ALREADY_TERMINAL")
             previous_status = mapping_row.mapping_status
@@ -1466,6 +1479,11 @@ class SqlAlchemyAuditFlowRepository:
                 command.expected_updated_at,
             ):
                 raise ValueError("CONFLICT_STALE_RESOURCE")
+            self._validate_review_snapshot(
+                item_snapshot_version=gap_row.snapshot_version,
+                cycle_snapshot_version=cycle_row.current_snapshot_version,
+                expected_snapshot_version=command.expected_snapshot_version,
+            )
             previous_status = gap_row.status
             if command.decision == "resolve_gap":
                 if gap_row.status == "resolved":
@@ -2013,3 +2031,15 @@ class SqlAlchemyAuditFlowRepository:
         if to_status:
             tags.append(f"status:{to_status}")
         return tags
+
+    @staticmethod
+    def _validate_review_snapshot(
+        *,
+        item_snapshot_version: int,
+        cycle_snapshot_version: int,
+        expected_snapshot_version: int | None,
+    ) -> None:
+        if item_snapshot_version != cycle_snapshot_version:
+            raise ValueError("CONFLICT_STALE_RESOURCE")
+        if expected_snapshot_version is not None and expected_snapshot_version != item_snapshot_version:
+            raise ValueError("CONFLICT_STALE_RESOURCE")

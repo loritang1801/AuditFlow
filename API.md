@@ -108,6 +108,7 @@ Shared authentication, response envelope, and approval APIs are defined in the s
   "mapping_id": "uuid",
   "control_state_id": "uuid",
   "control_code": "CC6.1",
+  "snapshot_version": 3,
   "evidence_id": "uuid",
   "mapping_status": "proposed",
   "confidence": 0.84,
@@ -133,6 +134,7 @@ Shared authentication, response envelope, and approval APIs are defined in the s
   "gap_type": "stale_evidence",
   "severity": "high",
   "status": "open",
+  "snapshot_version": 3,
   "title": "Access review evidence is older than policy threshold",
   "recommended_action": "Upload the latest quarterly access review artifact."
 }
@@ -521,6 +523,7 @@ Request body:
   "decision": "accept",
   "comment": "Citation is sufficient.",
   "target_control_id": null,
+  "expected_snapshot_version": 3,
   "expected_updated_at": "2026-03-16T09:00:00Z"
 }
 ```
@@ -529,6 +532,7 @@ Rules:
 
 1. `target_control_id` is required only when `decision = reassign`
 2. `expected_updated_at` is required for optimistic concurrency
+3. If supplied, `expected_snapshot_version` must match the mapping's stored snapshot and the cycle's current snapshot
 
 Response:
 
@@ -571,6 +575,7 @@ Request body:
 {
   "decision": "resolve_gap",
   "comment": "New evidence uploaded under SEC-125.",
+  "expected_snapshot_version": 3,
   "expected_updated_at": "2026-03-16T09:00:00Z"
 }
 ```
@@ -585,6 +590,7 @@ Rules:
 
 1. `acknowledge` is only valid when the current gap status is `open`
 2. `reopen_gap` is only valid when the current gap status is `resolved`
+3. If supplied, `expected_snapshot_version` must match the gap's stored snapshot and the cycle's current snapshot
 
 Response:
 

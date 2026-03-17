@@ -82,6 +82,7 @@ class MappingSummary(AuditFlowModel):
     control_state_id: str
     control_code: str
     mapping_status: str
+    snapshot_version: int
     evidence_item_id: str = Field(serialization_alias="evidence_id")
     rationale_summary: str
     citation_refs: list[dict[str, Any]] = Field(default_factory=list)
@@ -99,6 +100,7 @@ class ReviewQueueItem(AuditFlowModel):
     control_state_id: str
     control_code: str
     coverage_status: str
+    snapshot_version: int
     evidence_item_id: str = Field(serialization_alias="evidence_id")
     rationale_summary: str
     confidence: float | None = None
@@ -161,6 +163,7 @@ class GapSummary(AuditFlowModel):
     gap_type: str
     severity: str
     status: str
+    snapshot_version: int
     title: str
     recommended_action: str
     updated_at: datetime
@@ -228,6 +231,7 @@ class MappingReviewCommand(AuditFlowModel):
     decision: Literal["accept", "reject", "reassign"]
     comment: str = ""
     target_control_id: str | None = None
+    expected_snapshot_version: int | None = None
     expected_updated_at: datetime | None = None
 
 
@@ -240,6 +244,7 @@ class MappingReviewResponse(AuditFlowModel):
 class GapDecisionCommand(AuditFlowModel):
     decision: Literal["resolve_gap", "reopen_gap", "acknowledge"]
     comment: str = ""
+    expected_snapshot_version: int | None = None
     expected_updated_at: datetime | None = None
 
 

@@ -15,7 +15,15 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from auditflow_app.bootstrap import build_app_service
-from auditflow_app.repository import ArtifactBlobRow, EvidenceChunkRow, EvidenceRow, ExportPackageRow, MappingRow, ReviewDecisionRow
+from auditflow_app.repository import (
+    ArtifactBlobRow,
+    AuditCycleRow,
+    EvidenceChunkRow,
+    EvidenceRow,
+    ExportPackageRow,
+    MappingRow,
+    ReviewDecisionRow,
+)
 from auditflow_app.sample_payloads import (
     cycle_create_command,
     cycle_processing_command,
@@ -372,6 +380,35 @@ class AuditFlowServiceTests(unittest.TestCase):
 
         self.assertEqual(first.mapping_status, second.mapping_status)
         self.assertEqual(first.mapping_id, second.mapping_id)
+
+    def test_review_mapping_rejects_stale_snapshot_after_cycle_advances(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with service.repository.session_factory.begin() as session:
+            cycle_row = session.get(AuditCycleRow, "cycle-1")
+            self.assertIsNotNone(cycle_row)
+            cycle_row.current_snapshot_version = 2
+            cycle_row.updated_at = service.repository._utcnow_naive()
+
+        with self.assertRaisesRegex(ValueError, "CONFLICT_STALE_RESOURCE"):
+            service.review_mapping(
+                "mapping-1",
+                mapping_review_command(expected_snapshot_version=1),
+            )
+
+    def test_gap_decision_rejects_expected_snapshot_version_conflict(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with self.assertRaisesRegex(ValueError, "CONFLICT_STALE_RESOURCE"):
+            service.decide_gap(
+                "gap-1",
+                gap_decision_command(
+                    decision="resolve_gap",
+                    expected_snapshot_version=2,
+                ),
+            )
 
     def test_gap_decision_rejects_idempotency_conflict(self) -> None:
         service = build_app_service()

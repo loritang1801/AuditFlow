@@ -80,18 +80,26 @@ def mapping_review_command(
     decision: str = "accept",
     comment: str = "Citation is sufficient.",
     target_control_id: str | None = None,
+    expected_snapshot_version: int | None = None,
 ) -> dict:
     return {
         "decision": decision,
         "comment": comment,
         "target_control_id": target_control_id,
+        "expected_snapshot_version": expected_snapshot_version,
     }
 
 
-def gap_decision_command(*, decision: str = "resolve_gap", comment: str = "Gap resolved with current evidence.") -> dict:
+def gap_decision_command(
+    *,
+    decision: str = "resolve_gap",
+    comment: str = "Gap resolved with current evidence.",
+    expected_snapshot_version: int | None = None,
+) -> dict:
     return {
         "decision": decision,
         "comment": comment,
+        "expected_snapshot_version": expected_snapshot_version,
     }
 
 

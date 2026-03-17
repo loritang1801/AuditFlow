@@ -40,6 +40,7 @@
 - Workspace and cycle create/read models now persist contract-facing slug, owner, audit-period, and snapshot timestamp fields while accepting contract request aliases
 - Cycle creation plus upload/external import and export submission now support persisted idempotency keys, and cycle/import list routes now emit shared envelope metadata with cursor pagination
 - Review mapping and gap decision mutations now also support persisted idempotency keys, and the rest of the product read surface now emits shared envelopes instead of bare payloads
+- Mapping, gap, and review-queue reads now surface reviewer `snapshot_version`, and reviewer mutations reject stale snapshot decisions when the cycle has advanced or the caller provides a mismatched `expected_snapshot_version`
 - Shared health/workflow endpoints now also emit shared envelopes, and `/api/v1/events/stream` now supports workspace/cycle/export topic filters with payload-backed event context fallback when workflow state is unavailable
 - Control matrix queries now support `coverage_status` and `search` filters at the product layer
 - Review queue queries now support `control_state_id`, `severity`, and `sort=recent|ranking` filtering at the product layer
