@@ -171,8 +171,11 @@ class ExportPackageSummary(AuditFlowModel):
     snapshot_version: int
     status: str
     artifact_id: str | None = None
+    package_artifact_id: str | None = None
+    manifest_artifact_id: str | None = None
     workflow_run_id: str | None = None
     created_at: datetime
+    immutable_at: datetime | None = None
 
 
 class AuditCycleDashboardResponse(AuditFlowModel):

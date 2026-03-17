@@ -470,7 +470,17 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(review_queue.total_count, 0)
         self.assertEqual(result.current_state, "exported")
         self.assertEqual(export_package.status, "ready")
+        self.assertEqual(export_package.package_artifact_id, export_package.artifact_id)
+        self.assertIsNotNone(export_package.manifest_artifact_id)
+        self.assertIsNotNone(export_package.immutable_at)
         self.assertGreaterEqual(len(narratives), 1)
+
+        with service.repository.session_factory() as session:
+            manifest_row = session.get(ArtifactBlobRow, export_package.manifest_artifact_id)
+
+        self.assertIsNotNone(manifest_row)
+        self.assertIn("accepted_mappings", manifest_row.content_text)
+        self.assertIn("narratives", manifest_row.content_text)
 
     def test_create_export_package_returns_latest_package(self) -> None:
         service = build_app_service()
@@ -522,8 +532,10 @@ class AuditFlowServiceTests(unittest.TestCase):
                     snapshot_version=3,
                     status="queued",
                     artifact_id=None,
+                    manifest_artifact_id=None,
                     workflow_run_id="auditflow-export-queued",
                     created_at=now,
+                    immutable_at=None,
                 )
             )
 

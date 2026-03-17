@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
@@ -398,8 +399,10 @@ class ExportPackageRow(Base):
     snapshot_version: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(50))
     artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    manifest_artifact_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workflow_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    immutable_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
 
 
 def create_auditflow_tables(engine: Engine) -> None:
@@ -646,8 +649,11 @@ class SqlAlchemyAuditFlowRepository:
             snapshot_version=row.snapshot_version,
             status=row.status,
             artifact_id=row.artifact_id,
+            package_artifact_id=row.artifact_id,
+            manifest_artifact_id=row.manifest_artifact_id,
             workflow_run_id=row.workflow_run_id,
             created_at=row.created_at,
+            immutable_at=row.immutable_at,
         )
 
     @staticmethod
@@ -1403,6 +1409,8 @@ class SqlAlchemyAuditFlowRepository:
         created_at = datetime.now(UTC)
         package_id = f"pkg-{uuid4().hex[:10]}"
         artifact_id = f"artifact-export-{cycle_id}-{snapshot_version}"
+        manifest_artifact_id = f"{artifact_id}-manifest"
+        immutable_at = created_at if checkpoint_seq > 0 else None
         with self.session_factory.begin() as session:
             cycle_row = session.get(AuditCycleRow, cycle_id)
             if cycle_row is None:
@@ -1414,6 +1422,19 @@ class SqlAlchemyAuditFlowRepository:
 
             control_rows = session.scalars(
                 select(ControlCoverageRow).where(ControlCoverageRow.cycle_id == cycle_id)
+            ).all()
+            mapping_rows = session.scalars(
+                select(MappingRow)
+                .where(MappingRow.cycle_id == cycle_id)
+                .where(MappingRow.mapping_status == "accepted")
+                .order_by(MappingRow.control_code.asc(), MappingRow.mapping_id.asc())
+            ).all()
+            gap_rows = session.scalars(
+                select(GapRow)
+                .join(ControlCoverageRow, GapRow.control_state_id == ControlCoverageRow.control_state_id)
+                .where(ControlCoverageRow.cycle_id == cycle_id)
+                .where(GapRow.status != "resolved")
+                .order_by(GapRow.severity.asc(), GapRow.gap_id.asc())
             ).all()
             for row in control_rows:
                 row.coverage_status = "covered"
@@ -1442,6 +1463,73 @@ class SqlAlchemyAuditFlowRepository:
                         )
                     )
 
+            narrative_rows = session.scalars(
+                select(NarrativeRow)
+                .where(NarrativeRow.cycle_id == cycle_id)
+                .where(NarrativeRow.snapshot_version == snapshot_version)
+                .order_by(NarrativeRow.control_state_id.asc())
+            ).all()
+            manifest_payload = {
+                "package_id": package_id,
+                "cycle_id": cycle_id,
+                "snapshot_version": snapshot_version,
+                "workflow_run_id": workflow_run_id,
+                "created_at": created_at.isoformat().replace("+00:00", "Z"),
+                "immutable_at": (
+                    immutable_at.isoformat().replace("+00:00", "Z")
+                    if immutable_at is not None
+                    else None
+                ),
+                "controls": [
+                    {
+                        "control_state_id": row.control_state_id,
+                        "control_code": row.control_code,
+                        "coverage_status": row.coverage_status,
+                    }
+                    for row in sorted(control_rows, key=lambda item: item.control_code)
+                ],
+                "accepted_mappings": [
+                    {
+                        "mapping_id": row.mapping_id,
+                        "control_state_id": row.control_state_id,
+                        "control_code": row.control_code,
+                        "evidence_item_id": row.evidence_item_id,
+                    }
+                    for row in mapping_rows
+                ],
+                "open_gaps": [
+                    {
+                        "gap_id": row.gap_id,
+                        "control_state_id": row.control_state_id,
+                        "severity": row.severity,
+                        "status": row.status,
+                    }
+                    for row in gap_rows
+                ],
+                "narratives": [
+                    {
+                        "narrative_id": row.narrative_id,
+                        "control_state_id": row.control_state_id,
+                        "narrative_type": row.narrative_type,
+                    }
+                    for row in narrative_rows
+                ],
+            }
+            session.merge(
+                ArtifactBlobRow(
+                    artifact_id=manifest_artifact_id,
+                    artifact_type="audit_export_manifest",
+                    content_text=json.dumps(manifest_payload, sort_keys=True),
+                    metadata_payload={
+                        "package_id": package_id,
+                        "cycle_id": cycle_id,
+                        "snapshot_version": snapshot_version,
+                    },
+                    created_at=created_at,
+                    updated_at=created_at,
+                )
+            )
+
             session.add(
                 ExportPackageRow(
                     package_id=package_id,
@@ -1449,8 +1537,10 @@ class SqlAlchemyAuditFlowRepository:
                     snapshot_version=snapshot_version,
                     status="ready" if checkpoint_seq > 0 else "queued",
                     artifact_id=artifact_id,
+                    manifest_artifact_id=manifest_artifact_id,
                     workflow_run_id=workflow_run_id,
                     created_at=created_at,
+                    immutable_at=immutable_at,
                 )
             )
         return ExportPackageSummary(
@@ -1459,8 +1549,11 @@ class SqlAlchemyAuditFlowRepository:
             snapshot_version=snapshot_version,
             status="ready" if checkpoint_seq > 0 else "queued",
             artifact_id=artifact_id,
+            package_artifact_id=artifact_id,
+            manifest_artifact_id=manifest_artifact_id,
             workflow_run_id=workflow_run_id,
             created_at=created_at,
+            immutable_at=immutable_at,
         )
 
     @staticmethod
