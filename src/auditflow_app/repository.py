@@ -1515,6 +1515,34 @@ class SqlAlchemyAuditFlowRepository:
                     for row in narrative_rows
                 ],
             }
+            package_payload = {
+                "package_id": package_id,
+                "cycle_id": cycle_id,
+                "snapshot_version": snapshot_version,
+                "manifest_artifact_id": manifest_artifact_id,
+                "narrative_markdown": [
+                    {
+                        "control_state_id": row.control_state_id,
+                        "content_markdown": row.content_markdown,
+                    }
+                    for row in narrative_rows
+                ],
+            }
+            session.merge(
+                ArtifactBlobRow(
+                    artifact_id=artifact_id,
+                    artifact_type="audit_export_package",
+                    content_text=json.dumps(package_payload, sort_keys=True),
+                    metadata_payload={
+                        "package_id": package_id,
+                        "cycle_id": cycle_id,
+                        "snapshot_version": snapshot_version,
+                        "manifest_artifact_id": manifest_artifact_id,
+                    },
+                    created_at=created_at,
+                    updated_at=created_at,
+                )
+            )
             session.merge(
                 ArtifactBlobRow(
                     artifact_id=manifest_artifact_id,

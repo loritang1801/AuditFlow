@@ -39,7 +39,7 @@
 - Gap transitions now enforce a stricter terminal policy: `acknowledge` only from `open`, `reopen_gap` only from `resolved`
 - `routes.py` now contains explicit domain-error-to-HTTP mapping logic for product APIs
 - Import and export submission routes now return `202 Accepted` for async contract parity, and export submission rejects cycles with no accepted mappings, open review items, stale snapshot requests, and duplicate queued exports
-- Export package projection now records immutable package timestamps plus a persisted manifest artifact describing controls, accepted mappings, open gaps, and narratives for the frozen snapshot
+- Export package projection now records immutable package timestamps plus persisted package and manifest artifacts describing controls, accepted mappings, open gaps, and narratives for the frozen snapshot
 - `scripts/run_import_worker.py` now supports single-dispatch and polling modes with optional seeded upload jobs
 - Shared runtime foundation lives in `D:\project\SharedAgentCore`
 - Future AuditFlow code should consume vendored shared assets instead of re-implementing registries and runtime helpers

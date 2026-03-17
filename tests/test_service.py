@@ -476,9 +476,13 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(narratives), 1)
 
         with service.repository.session_factory() as session:
+            package_row = session.get(ArtifactBlobRow, export_package.package_artifact_id)
             manifest_row = session.get(ArtifactBlobRow, export_package.manifest_artifact_id)
 
+        self.assertIsNotNone(package_row)
         self.assertIsNotNone(manifest_row)
+        self.assertIn("manifest_artifact_id", package_row.content_text)
+        self.assertIn("narrative_markdown", package_row.content_text)
         self.assertIn("accepted_mappings", manifest_row.content_text)
         self.assertIn("narratives", manifest_row.content_text)
 
