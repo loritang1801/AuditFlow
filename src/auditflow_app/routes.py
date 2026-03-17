@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import importlib
+from typing import Any
 
 ERROR_STATUS_BY_CODE = {
     "WORKSPACE_SLUG_ALREADY_EXISTS": 409,
     "CYCLE_NAME_ALREADY_EXISTS": 409,
+    "IDEMPOTENCY_CONFLICT": 409,
     "CONFLICT_STALE_RESOURCE": 409,
     "MAPPING_ALREADY_TERMINAL": 409,
     "GAP_STATUS_CONFLICT": 409,
@@ -12,6 +16,7 @@ ERROR_STATUS_BY_CODE = {
     "SNAPSHOT_STALE": 409,
     "CYCLE_NOT_READY_FOR_EXPORT": 422,
     "INVALID_REVIEW_QUEUE_SORT": 400,
+    "INVALID_CURSOR": 400,
 }
 
 from .api_models import (
@@ -47,6 +52,9 @@ from .api_models import (
 from .service import AuditFlowAppService
 from .shared_runtime import load_shared_agent_platform
 
+DEFAULT_PAGE_LIMIT = 20
+MAX_PAGE_LIMIT = 100
+
 
 def map_domain_error(exc: Exception, *, path: str = "") -> tuple[int, dict[str, object]]:
     if isinstance(exc, KeyError):
@@ -75,10 +83,62 @@ def map_domain_error(exc: Exception, *, path: str = "") -> tuple[int, dict[str, 
     return 500, {"error": {"code": "INTERNAL_ERROR", "message": "Internal server error"}}
 
 
+def _serialize_data(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(by_alias=True)
+    if isinstance(value, list):
+        return [_serialize_data(item) for item in value]
+    return value
+
+
+def success_envelope(
+    data: Any,
+    *,
+    request_id: str | None = None,
+    workflow_run_id: str | None = None,
+    next_cursor: str | None = None,
+    has_more: bool = False,
+) -> dict[str, object]:
+    meta: dict[str, object] = {"request_id": request_id, "has_more": has_more}
+    if next_cursor is not None:
+        meta["next_cursor"] = next_cursor
+    if workflow_run_id is not None:
+        meta["workflow_run_id"] = workflow_run_id
+    return {"data": _serialize_data(data), "meta": meta}
+
+
+def _encode_cursor(offset: int) -> str | None:
+    if offset <= 0:
+        return None
+    return base64.urlsafe_b64encode(f"offset:{offset}".encode("utf-8")).decode("ascii")
+
+
+def _decode_cursor(cursor: str | None) -> int:
+    if cursor in {None, ""}:
+        return 0
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8")
+    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+        raise ValueError("INVALID_CURSOR") from exc
+    prefix, separator, raw_offset = decoded.partition(":")
+    if prefix != "offset" or separator != ":" or not raw_offset.isdigit():
+        raise ValueError("INVALID_CURSOR")
+    return int(raw_offset)
+
+
+def paginate_collection(items: list[Any], *, cursor: str | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> tuple[list[Any], str | None, bool]:
+    normalized_limit = max(1, min(limit, MAX_PAGE_LIMIT))
+    start = _decode_cursor(cursor)
+    page = items[start : start + normalized_limit]
+    next_offset = start + normalized_limit
+    has_more = next_offset < len(items)
+    return page, (_encode_cursor(next_offset) if has_more else None), has_more
+
+
 def create_fastapi_app(service: AuditFlowAppService):
     ap = load_shared_agent_platform()
     try:
-        from fastapi import FastAPI, Request
+        from fastapi import FastAPI, Header, Request
         from fastapi.responses import JSONResponse
     except ImportError as exc:
         errors_module = importlib.import_module(f"{ap.__name__}.errors")
@@ -110,24 +170,53 @@ def create_fastapi_app(service: AuditFlowAppService):
     def get_workflow_state(workflow_run_id: str) -> AuditFlowWorkflowStateResponse:
         return service.get_workflow_state(workflow_run_id)
 
-    @app.post("/api/v1/auditflow/workspaces", response_model=AuditWorkspaceSummary, status_code=201)
-    def create_workspace(command: CreateWorkspaceCommand) -> AuditWorkspaceSummary:
-        return service.create_workspace(command)
+    @app.post("/api/v1/auditflow/workspaces", status_code=201)
+    def create_workspace(
+        command: CreateWorkspaceCommand,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.create_workspace(command),
+            request_id=request_id,
+        )
 
-    @app.get("/api/v1/auditflow/workspaces/{workspace_id}", response_model=AuditWorkspaceSummary)
-    def get_workspace(workspace_id: str) -> AuditWorkspaceSummary:
-        return service.get_workspace(workspace_id)
+    @app.get("/api/v1/auditflow/workspaces/{workspace_id}")
+    def get_workspace(
+        workspace_id: str,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.get_workspace(workspace_id),
+            request_id=request_id,
+        )
 
-    @app.post("/api/v1/auditflow/cycles", response_model=AuditCycleSummary, status_code=201)
-    def create_cycle(command: CreateCycleCommand) -> AuditCycleSummary:
-        return service.create_cycle(command)
+    @app.post("/api/v1/auditflow/cycles", status_code=201)
+    def create_cycle(
+        command: CreateCycleCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.create_cycle(command, idempotency_key=idempotency_key),
+            request_id=request_id,
+        )
 
-    @app.get("/api/v1/auditflow/cycles", response_model=list[AuditCycleSummary])
+    @app.get("/api/v1/auditflow/cycles")
     def list_cycles(
         workspace_id: str,
         status: str | None = None,
-    ) -> list[AuditCycleSummary]:
-        return service.list_cycles(workspace_id, status=status)
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        items = service.list_cycles(workspace_id, status=status)
+        page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/dashboard", response_model=AuditCycleDashboardResponse)
     def get_cycle_dashboard(cycle_id: str) -> AuditCycleDashboardResponse:
@@ -206,34 +295,62 @@ def create_fastapi_app(service: AuditFlowAppService):
             sort=sort,
         )
 
-    @app.get("/api/v1/auditflow/cycles/{cycle_id}/imports", response_model=ImportListResponse)
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/imports")
     def list_imports(
         cycle_id: str,
         status: str | None = None,
         ingest_status: str | None = None,
         source_type: str | None = None,
-    ) -> ImportListResponse:
-        return service.list_imports(
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        response = service.list_imports(
             cycle_id,
             ingest_status=status or ingest_status,
             source_type=source_type,
         )
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
     @app.post(
         "/api/v1/auditflow/cycles/{cycle_id}/imports/upload",
-        response_model=ImportAcceptedResponse,
         status_code=202,
     )
-    def create_upload_import(cycle_id: str, command: UploadImportCommand) -> ImportAcceptedResponse:
-        return service.create_upload_import(cycle_id, command)
+    def create_upload_import(
+        cycle_id: str,
+        command: UploadImportCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        response = service.create_upload_import(cycle_id, command, idempotency_key=idempotency_key)
+        return success_envelope(
+            response,
+            request_id=request_id,
+            workflow_run_id=response.workflow_run_id,
+        )
 
     @app.post(
         "/api/v1/auditflow/cycles/{cycle_id}/imports/external",
-        response_model=ImportAcceptedResponse,
         status_code=202,
     )
-    def create_external_import(cycle_id: str, command: ExternalImportCommand) -> ImportAcceptedResponse:
-        return service.create_external_import(cycle_id, command)
+    def create_external_import(
+        cycle_id: str,
+        command: ExternalImportCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        response = service.create_external_import(cycle_id, command, idempotency_key=idempotency_key)
+        return success_envelope(
+            response,
+            request_id=request_id,
+            workflow_run_id=response.workflow_run_id,
+        )
 
     @app.post("/api/v1/auditflow/import-jobs/dispatch", response_model=ImportDispatchResponse)
     def dispatch_import_jobs() -> ImportDispatchResponse:
@@ -265,18 +382,33 @@ def create_fastapi_app(service: AuditFlowAppService):
 
     @app.post(
         "/api/v1/auditflow/cycles/{cycle_id}/exports",
-        response_model=ExportPackageSummary,
         status_code=202,
     )
-    def create_export_package(cycle_id: str, command: ExportCreateCommand) -> ExportPackageSummary:
-        return service.create_export_package(cycle_id, command)
+    def create_export_package(
+        cycle_id: str,
+        command: ExportCreateCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        response = service.create_export_package(cycle_id, command, idempotency_key=idempotency_key)
+        return success_envelope(
+            response,
+            request_id=request_id,
+            workflow_run_id=response.workflow_run_id,
+        )
 
     @app.post("/api/v1/auditflow/exports/generate", response_model=AuditFlowRunResponse)
     def generate_export(command: ExportGenerationCommand) -> AuditFlowRunResponse:
         return service.generate_export(command)
 
-    @app.get("/api/v1/auditflow/exports/{package_id}", response_model=ExportPackageSummary)
-    def get_export_package(package_id: str) -> ExportPackageSummary:
-        return service.get_export_package(package_id)
+    @app.get("/api/v1/auditflow/exports/{package_id}")
+    def get_export_package(
+        package_id: str,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.get_export_package(package_id),
+            request_id=request_id,
+        )
 
     return app

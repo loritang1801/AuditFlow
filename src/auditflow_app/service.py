@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -9,6 +10,7 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from .api_models import (
+    AuditCycleSummary,
     AuditCycleDashboardResponse,
     AuditFlowRunResponse,
     AuditFlowWorkflowStateResponse,
@@ -78,6 +80,40 @@ class AuditFlowAppService:
     def _to_run_response(result) -> AuditFlowRunResponse:
         return AuditFlowRunResponse.model_validate(result.model_dump())
 
+    @staticmethod
+    def _hash_request_payload(payload: dict[str, Any]) -> str:
+        normalized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _load_idempotent_response(self, *, operation: str, idempotency_key: str | None, request_payload: dict[str, Any], model_type):
+        if not idempotency_key:
+            return None
+        payload = self.repository.load_idempotency_response(
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=self._hash_request_payload(request_payload),
+        )
+        if payload is None:
+            return None
+        return model_type.model_validate(payload)
+
+    def _store_idempotent_response(
+        self,
+        *,
+        operation: str,
+        idempotency_key: str | None,
+        request_payload: dict[str, Any],
+        response_payload: dict[str, Any],
+    ) -> None:
+        if not idempotency_key:
+            return
+        self.repository.store_idempotency_response(
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=self._hash_request_payload(request_payload),
+            response_payload=response_payload,
+        )
+
     def list_workflows(self):
         return self.workflow_api_service.list_workflows()
 
@@ -95,10 +131,28 @@ class AuditFlowAppService:
     def create_cycle(
         self,
         command: CreateCycleCommand | dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
     ):
         if isinstance(command, dict):
             command = CreateCycleCommand.model_validate(command)
-        return self.repository.create_cycle(command)
+        request_payload = command.model_dump(mode="json")
+        cached = self._load_idempotent_response(
+            operation="auditflow.create_cycle",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            model_type=AuditCycleSummary,
+        )
+        if cached is not None:
+            return cached
+        response = self.repository.create_cycle(command)
+        self._store_idempotent_response(
+            operation="auditflow.create_cycle",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            response_payload=response.model_dump(mode="json"),
+        )
+        return response
 
     def list_cycles(
         self,
@@ -197,9 +251,20 @@ class AuditFlowAppService:
         self,
         cycle_id: str,
         command: UploadImportCommand | dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
     ) -> ImportAcceptedResponse:
         if isinstance(command, dict):
             command = UploadImportCommand.model_validate(command)
+        request_payload = {"cycle_id": cycle_id, **command.model_dump(mode="json")}
+        cached = self._load_idempotent_response(
+            operation="auditflow.create_upload_import",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            model_type=ImportAcceptedResponse,
+        )
+        if cached is not None:
+            return cached
         response = self.repository.create_upload_import(cycle_id, command)
         if response.evidence_source_ids:
             self._enqueue_import_job(
@@ -216,15 +281,32 @@ class AuditFlowAppService:
                 organization_id=command.organization_id,
                 workspace_id=command.workspace_id,
             )
+        self._store_idempotent_response(
+            operation="auditflow.create_upload_import",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            response_payload=response.model_dump(mode="json"),
+        )
         return response
 
     def create_external_import(
         self,
         cycle_id: str,
         command: ExternalImportCommand | dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
     ) -> ImportAcceptedResponse:
         if isinstance(command, dict):
             command = ExternalImportCommand.model_validate(command)
+        request_payload = {"cycle_id": cycle_id, **command.model_dump(mode="json")}
+        cached = self._load_idempotent_response(
+            operation="auditflow.create_external_import",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            model_type=ImportAcceptedResponse,
+        )
+        if cached is not None:
+            return cached
         response = self.repository.create_external_import(cycle_id, command)
         selectors = command.upstream_ids or [command.query or ""]
         for index, evidence_source_id in enumerate(response.evidence_source_ids):
@@ -249,6 +331,12 @@ class AuditFlowAppService:
                 organization_id=command.organization_id,
                 workspace_id=command.workspace_id,
             )
+        self._store_idempotent_response(
+            operation="auditflow.create_external_import",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            response_payload=response.model_dump(mode="json"),
+        )
         return response
 
     def dispatch_import_jobs(self) -> ImportDispatchResponse:
@@ -357,9 +445,20 @@ class AuditFlowAppService:
         self,
         cycle_id: str,
         command: ExportCreateCommand | dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
     ) -> ExportPackageSummary:
         if isinstance(command, dict):
             command = ExportCreateCommand.model_validate(command)
+        request_payload = {"cycle_id": cycle_id, **command.model_dump(mode="json")}
+        cached = self._load_idempotent_response(
+            operation="auditflow.create_export_package",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            model_type=ExportPackageSummary,
+        )
+        if cached is not None:
+            return cached
         dashboard = self.repository.get_cycle_dashboard(cycle_id)
         if (
             dashboard.accepted_mapping_count == 0
@@ -388,7 +487,14 @@ class AuditFlowAppService:
         dashboard = self.repository.get_cycle_dashboard(cycle_id)
         if dashboard.latest_export_package is None:
             raise RuntimeError("Expected export package to be created")
-        return dashboard.latest_export_package
+        response = dashboard.latest_export_package
+        self._store_idempotent_response(
+            operation="auditflow.create_export_package",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            response_payload=response.model_dump(mode="json"),
+        )
+        return response
 
     def get_workflow_state(self, workflow_run_id: str) -> AuditFlowWorkflowStateResponse:
         state = self.workflow_api_service.execution_service.load_workflow_state(workflow_run_id)

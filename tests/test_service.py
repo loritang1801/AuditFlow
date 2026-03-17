@@ -116,6 +116,38 @@ class AuditFlowServiceTests(unittest.TestCase):
                 }
             )
 
+    def test_create_cycle_is_idempotent_for_repeated_key(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        first = service.create_cycle(
+            cycle_create_command(workspace_id="audit-ws-1", cycle_name="SOC2 2030"),
+            idempotency_key="cycle-create-1",
+        )
+        second = service.create_cycle(
+            cycle_create_command(workspace_id="audit-ws-1", cycle_name="SOC2 2030"),
+            idempotency_key="cycle-create-1",
+        )
+        cycles = [item for item in service.list_cycles("audit-ws-1") if item.cycle_name == "SOC2 2030"]
+
+        self.assertEqual(first.cycle_id, second.cycle_id)
+        self.assertEqual(len(cycles), 1)
+
+    def test_create_cycle_rejects_idempotency_conflict(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.create_cycle(
+            cycle_create_command(workspace_id="audit-ws-1", cycle_name="SOC2 2031"),
+            idempotency_key="cycle-create-conflict",
+        )
+
+        with self.assertRaisesRegex(ValueError, "IDEMPOTENCY_CONFLICT"):
+            service.create_cycle(
+                cycle_create_command(workspace_id="audit-ws-1", cycle_name="SOC2 2032"),
+                idempotency_key="cycle-create-conflict",
+            )
+
     def test_query_workspace_cycle_and_review_queue(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
@@ -349,6 +381,33 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(duplicate.evidence_source_ids, [])
         self.assertEqual(imports.total_count, 2)
         self.assertEqual(dispatch.dispatched_count, 1)
+
+    def test_upload_import_is_idempotent_for_repeated_key(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        first = service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-idempotent",
+                display_name="Idempotent Access Review Export",
+            ),
+            idempotency_key="upload-import-1",
+        )
+        second = service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-idempotent",
+                display_name="Idempotent Access Review Export",
+            ),
+            idempotency_key="upload-import-1",
+        )
+        imports = service.list_imports("cycle-1")
+
+        matching = [item for item in imports.items if item.artifact_id == "artifact-upload-idempotent"]
+        self.assertEqual(first.workflow_run_id, second.workflow_run_id)
+        self.assertEqual(first.evidence_source_ids, second.evidence_source_ids)
+        self.assertEqual(len(matching), 1)
 
     def test_import_processing_persists_artifact_backed_evidence_and_chunks(self) -> None:
         service = build_app_service()

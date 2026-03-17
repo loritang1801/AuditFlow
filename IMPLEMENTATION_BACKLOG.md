@@ -25,8 +25,8 @@ Status: partially implemented
 
 Missing or partial:
 
-1. Workspace/cycle resource models now carry contract-aligned slug/owner/period/snapshot fields and accept contract request aliases, but list endpoints still return simplified bare arrays instead of the shared paginated envelope.
-2. Product routes now expose domain-error mapping, but idempotency enforcement and full envelope parity are still missing.
+1. Workspace/cycle resource models now carry contract-aligned slug/owner/period/snapshot fields, and cycle/import routes now use shared success envelopes with cursor metadata, but full product-wide envelope parity is still missing.
+2. Core cycle/import/export routes now enforce persisted idempotency keys, but the rest of the mutation surface has not been upgraded yet.
 3. Workspace/cycle write endpoints still do not cover the full contract surface beyond create/read plus current query filters.
 4. SSE and async event surfaces are not exposed at the product layer.
 
