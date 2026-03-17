@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import csv
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from uuid import uuid4
+from io import StringIO
 from typing import Any, TypeVar
+from uuid import uuid4
 
 from .api_models import (
     AuditCycleDashboardResponse,
@@ -45,6 +48,8 @@ class ParsedImportArtifact:
     normalized_text: str
     summary: str
     chunk_texts: list[str]
+    parser_kind: str
+    parser_metadata: dict[str, object]
 
 
 class AuditFlowAppService:
@@ -387,6 +392,8 @@ class AuditFlowAppService:
                 "display_name": display_name,
                 "source_type": source_type,
                 "source_locator": source_locator,
+                "parser_kind": parsed_artifact.parser_kind,
+                **parsed_artifact.parser_metadata,
             },
         )
         self.repository.upsert_artifact_blob(
@@ -397,6 +404,8 @@ class AuditFlowAppService:
                 "display_name": display_name,
                 "source_type": source_type,
                 "source_locator": source_locator,
+                "parser_kind": parsed_artifact.parser_kind,
+                **parsed_artifact.parser_metadata,
             },
         )
         extracted_text_or_summary = str(
@@ -408,6 +417,12 @@ class AuditFlowAppService:
         allowed_evidence_types = list(payload.get("allowed_evidence_types", [evidence_type]))
         mapping_payloads = list(payload.get("mapping_payloads", []))
         metadata_update = dict(payload.get("metadata_update", {}))
+        metadata_update.update(
+            {
+                "parser_kind": parsed_artifact.parser_kind,
+                "parser_metadata": parsed_artifact.parser_metadata,
+            }
+        )
         self.process_cycle(
             CycleProcessingCommand(
                 workflow_run_id=workflow_run_id,
@@ -467,6 +482,136 @@ class AuditFlowAppService:
         artifact_text: str | None,
     ) -> ParsedImportArtifact:
         raw_text = (artifact_text or f"{display_name}\n\nSource: {source_locator or source_type}").strip()
+        artifact_format = AuditFlowAppService._detect_artifact_format(
+            artifact_id=artifact_id,
+            source_locator=source_locator,
+            raw_text=raw_text,
+        )
+        if artifact_format == "csv":
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_csv_artifact(
+                display_name=display_name,
+                raw_text=raw_text,
+            )
+        elif artifact_format == "json":
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_json_artifact(
+                display_name=display_name,
+                raw_text=raw_text,
+            )
+        else:
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
+                source_type=source_type,
+                display_name=display_name,
+                raw_text=raw_text,
+            )
+        parser_kind = str(parser_metadata.get("source_format", artifact_format))
+        summary = AuditFlowAppService._build_artifact_summary(chunk_texts[0] if chunk_texts else raw_text)
+        if len(summary) > 180:
+            summary = f"{summary[:177]}..."
+        return ParsedImportArtifact(
+            raw_artifact_id=artifact_id,
+            normalized_artifact_id=f"{artifact_id}-normalized",
+            raw_text=raw_text,
+            normalized_text=normalized_text or raw_text,
+            summary=summary,
+            chunk_texts=chunk_texts,
+            parser_kind=parser_kind,
+            parser_metadata=parser_metadata,
+        )
+
+    @staticmethod
+    def _detect_artifact_format(
+        *,
+        artifact_id: str,
+        source_locator: str | None,
+        raw_text: str,
+    ) -> str:
+        locator_candidates = [
+            value.split("?", maxsplit=1)[0].lower()
+            for value in (source_locator, artifact_id)
+            if value is not None
+        ]
+        stripped = raw_text.lstrip()
+        first_line = stripped.splitlines()[0] if stripped else ""
+        if any(candidate.endswith(".json") for candidate in locator_candidates) and stripped.startswith(("{", "[")):
+            return "json"
+        if any(candidate.endswith(".csv") for candidate in locator_candidates) and "," in first_line:
+            return "csv"
+        return "text"
+
+    @staticmethod
+    def _parse_csv_artifact(
+        *,
+        display_name: str,
+        raw_text: str,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        reader = csv.DictReader(StringIO(raw_text))
+        fieldnames = [name.strip() for name in (reader.fieldnames or []) if name and name.strip()]
+        if len(fieldnames) < 2:
+            return AuditFlowAppService._parse_text_artifact(
+                source_type="upload",
+                display_name=display_name,
+                raw_text=raw_text,
+            )
+        row_chunks: list[str] = []
+        for index, row in enumerate(reader, start=1):
+            row_lines = [
+                f"{column}: {value.strip()}"
+                for column in fieldnames
+                for value in [str(row.get(column, "")).strip()]
+                if value
+            ]
+            if not row_lines:
+                continue
+            row_chunks.append(f"CSV row {index}\n" + "\n".join(row_lines))
+        if not row_chunks:
+            return AuditFlowAppService._parse_text_artifact(
+                source_type="upload",
+                display_name=display_name,
+                raw_text=raw_text,
+            )
+        normalized_text = "\n\n".join([f"CSV import: {display_name}", *row_chunks])
+        return normalized_text, row_chunks, {
+            "source_format": "csv",
+            "column_names": fieldnames,
+            "row_count": len(row_chunks),
+        }
+
+    @staticmethod
+    def _parse_json_artifact(
+        *,
+        display_name: str,
+        raw_text: str,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        try:
+            parsed = json.loads(raw_text)
+        except json.JSONDecodeError:
+            return AuditFlowAppService._parse_text_artifact(
+                source_type="upload",
+                display_name=display_name,
+                raw_text=raw_text,
+            )
+        section_chunks = AuditFlowAppService._render_json_sections(parsed)
+        if not section_chunks:
+            return AuditFlowAppService._parse_text_artifact(
+                source_type="upload",
+                display_name=display_name,
+                raw_text=raw_text,
+            )
+        normalized_text = "\n\n".join([f"JSON import: {display_name}", *section_chunks])
+        metadata: dict[str, object] = {"source_format": "json"}
+        if isinstance(parsed, dict):
+            metadata["top_level_keys"] = list(parsed.keys())
+        elif isinstance(parsed, list):
+            metadata["top_level_count"] = len(parsed)
+        return normalized_text, section_chunks, metadata
+
+    @staticmethod
+    def _parse_text_artifact(
+        *,
+        source_type: str,
+        display_name: str,
+        raw_text: str,
+    ) -> tuple[str, list[str], dict[str, object]]:
         normalized_lines = [line.strip() for line in raw_text.replace("\r\n", "\n").split("\n")]
         normalized_text = "\n".join(normalized_lines).strip()
         paragraphs = [part.strip() for part in normalized_text.split("\n\n") if part.strip()]
@@ -483,14 +628,43 @@ class AuditFlowAppService:
             chunk_texts.append(current_chunk)
         if not chunk_texts:
             chunk_texts.append(f"Imported {source_type}: {display_name}")
-        summary = chunk_texts[0].replace("\n", " ")
-        if len(summary) > 180:
-            summary = f"{summary[:177]}..."
-        return ParsedImportArtifact(
-            raw_artifact_id=artifact_id,
-            normalized_artifact_id=f"{artifact_id}-normalized",
-            raw_text=raw_text,
-            normalized_text=normalized_text or raw_text,
-            summary=summary,
-            chunk_texts=chunk_texts,
-        )
+        return normalized_text or raw_text, chunk_texts, {
+            "source_format": "text",
+            "paragraph_count": len(paragraphs) if paragraphs else 1,
+        }
+
+    @staticmethod
+    def _render_json_sections(parsed: object) -> list[str]:
+        if isinstance(parsed, dict):
+            sections: list[str] = []
+            for key, value in parsed.items():
+                lines = AuditFlowAppService._flatten_json_value(key, value)
+                if lines:
+                    sections.append("\n".join(lines))
+            return sections
+        if isinstance(parsed, list):
+            sections = []
+            for index, item in enumerate(parsed, start=1):
+                lines = AuditFlowAppService._flatten_json_value(f"item[{index}]", item)
+                if lines:
+                    sections.append("\n".join(lines))
+            return sections
+        return ["\n".join(AuditFlowAppService._flatten_json_value("value", parsed))]
+
+    @staticmethod
+    def _flatten_json_value(prefix: str, value: object) -> list[str]:
+        if isinstance(value, dict):
+            lines: list[str] = []
+            for key, nested in value.items():
+                lines.extend(AuditFlowAppService._flatten_json_value(f"{prefix}.{key}", nested))
+            return lines
+        if isinstance(value, list):
+            lines: list[str] = []
+            for index, nested in enumerate(value):
+                lines.extend(AuditFlowAppService._flatten_json_value(f"{prefix}[{index}]", nested))
+            return lines
+        return [f"{prefix}: {value}"]
+
+    @staticmethod
+    def _build_artifact_summary(chunk_text: str) -> str:
+        return chunk_text.replace("\n", " ")

@@ -40,10 +40,11 @@ Implemented:
 2. Import worker dispatches connector-specific handlers.
 3. Duplicate upload and connector sources now collapse at import acceptance time via source fingerprints and stable source keys.
 4. Import processing now persists raw/normalized artifact text blobs and multi-chunk evidence rows for downstream review.
+5. Upload imports now apply format-aware CSV/JSON/text normalization before chunk materialization.
 
 Missing or partial:
 
-1. No OCR or file-format-specific parser pipeline yet.
+1. No OCR or binary file parser pipeline yet.
 2. No embedding/index persistence path yet.
 3. External connectors still use synthetic payload capture rather than live pulls.
 

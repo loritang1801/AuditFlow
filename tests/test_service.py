@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -197,6 +198,86 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(evidence.source["artifact_id"], "artifact-upload-rich-1")
         self.assertEqual(evidence.source["normalized_artifact_id"], "artifact-upload-rich-1-normalized")
         self.assertGreaterEqual(len(evidence.chunks), 2)
+
+    def test_csv_upload_import_uses_structured_parser_metadata(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-csv-1",
+                display_name="Quarterly Access Review CSV",
+                artifact_text=(
+                    "reviewer,system,status\n"
+                    "Security Engineering,production-admins,approved\n"
+                    "Security Engineering,break-glass,approved\n"
+                ),
+            ),
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-csv-1-normalized")
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-csv-1")
+            ).first()
+            chunk_rows = session.scalars(
+                select(EvidenceChunkRow)
+                .where(EvidenceChunkRow.evidence_id == evidence_row.evidence_id)
+                .order_by(EvidenceChunkRow.chunk_index.asc())
+            ).all()
+
+        self.assertIsNotNone(normalized_row)
+        self.assertEqual(normalized_row.metadata_payload["parser_kind"], "csv")
+        self.assertEqual(normalized_row.metadata_payload["row_count"], 2)
+        self.assertEqual(
+            normalized_row.metadata_payload["column_names"],
+            ["reviewer", "system", "status"],
+        )
+        self.assertIn("CSV row 1", normalized_row.content_text)
+        self.assertEqual(len(chunk_rows), 2)
+
+    def test_json_upload_import_flattens_nested_fields(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-json-1",
+                display_name="Access Review JSON",
+                artifact_text=json.dumps(
+                    {
+                        "review": {
+                            "owner": "Security Engineering",
+                            "quarter": "2026-Q1",
+                        },
+                        "controls": [
+                            {"code": "CC6.1", "status": "covered"},
+                            {"code": "CC6.2", "status": "covered"},
+                        ],
+                    }
+                ),
+            )
+            | {"source_locator": "uploads/access-review.json"},
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-json-1-normalized")
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-json-1")
+            ).first()
+
+        self.assertIsNotNone(normalized_row)
+        self.assertEqual(normalized_row.metadata_payload["parser_kind"], "json")
+        self.assertEqual(normalized_row.metadata_payload["top_level_keys"], ["review", "controls"])
+        self.assertIn("review.owner: Security Engineering", normalized_row.content_text)
+        self.assertIn("controls[0].code: CC6.1", normalized_row.content_text)
+
+        evidence = service.get_evidence(evidence_row.evidence_id)
+        self.assertIn("review.owner: Security Engineering", evidence.summary)
 
     def test_mapping_and_gap_reviews_append_review_decision_audit_rows(self) -> None:
         service = build_app_service()
