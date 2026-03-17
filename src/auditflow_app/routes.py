@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 
 ERROR_STATUS_BY_CODE = {
+    "WORKSPACE_SLUG_ALREADY_EXISTS": 409,
     "CYCLE_NAME_ALREADY_EXISTS": 409,
     "CONFLICT_STALE_RESOURCE": 409,
     "MAPPING_ALREADY_TERMINAL": 409,

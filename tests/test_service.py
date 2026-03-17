@@ -57,6 +57,65 @@ class AuditFlowServiceTests(unittest.TestCase):
             EXPECTED_SOC2_CONTROL_CODES,
         )
 
+    def test_workspace_and_cycle_contract_fields_serialize_with_aliases(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        workspace = service.create_workspace(
+            {
+                "name": "Alias Contract Workspace",
+                "slug": "alias-contract-workspace",
+                "default_framework": "SOC2",
+                "default_owner_user_id": "owner-contract-1",
+                "settings": {"freshness_days_default": 45},
+            }
+        )
+        cycle = service.create_cycle(
+            {
+                "workspace_id": workspace.workspace_id,
+                "cycle_name": "SOC2 2029",
+                "audit_period_start": "2029-01-01",
+                "audit_period_end": "2029-12-31",
+                "owner_user_id": "owner-contract-2",
+            }
+        )
+
+        workspace_payload = workspace.model_dump(by_alias=True)
+        cycle_payload = cycle.model_dump(by_alias=True)
+
+        self.assertEqual(workspace_payload["id"], workspace.workspace_id)
+        self.assertEqual(workspace_payload["name"], "Alias Contract Workspace")
+        self.assertEqual(workspace_payload["slug"], "alias-contract-workspace")
+        self.assertEqual(workspace_payload["default_framework"], "SOC2")
+        self.assertEqual(workspace_payload["default_owner_user_id"], "owner-contract-1")
+        self.assertIn("created_at", workspace_payload)
+        self.assertEqual(cycle_payload["id"], cycle.cycle_id)
+        self.assertEqual(cycle_payload["status"], "draft")
+        self.assertEqual(cycle_payload["framework"], "SOC2")
+        self.assertEqual(cycle_payload["audit_period_start"].isoformat(), "2029-01-01")
+        self.assertEqual(cycle_payload["audit_period_end"].isoformat(), "2029-12-31")
+        self.assertEqual(cycle_payload["owner_user_id"], "owner-contract-2")
+        self.assertEqual(cycle_payload["current_snapshot_version"], 0)
+
+    def test_create_workspace_rejects_duplicate_slug(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.create_workspace(
+            {
+                "name": "Duplicate Slug Workspace",
+                "slug": "duplicate-audit-workspace",
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "WORKSPACE_SLUG_ALREADY_EXISTS"):
+            service.create_workspace(
+                {
+                    "name": "Another Duplicate Slug Workspace",
+                    "slug": "duplicate-audit-workspace",
+                }
+            )
+
     def test_query_workspace_cycle_and_review_queue(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
@@ -242,6 +301,21 @@ class AuditFlowServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "GAP_STATUS_CONFLICT"):
             service.decide_gap("gap-1", gap_decision_command(decision="reopen_gap"))
+
+    def test_cycle_contract_timestamps_advance_after_processing_and_review(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.process_cycle(
+            cycle_processing_command(workflow_run_id="auditflow-contract-cycle")
+        )
+        cycle_after_processing = service.get_cycle_dashboard("cycle-1").cycle
+        service.review_mapping("mapping-1", mapping_review_command())
+        cycle_after_review = service.get_cycle_dashboard("cycle-1").cycle
+
+        self.assertEqual(cycle_after_processing.current_snapshot_version, 1)
+        self.assertIsNotNone(cycle_after_processing.last_mapped_at)
+        self.assertIsNotNone(cycle_after_review.last_reviewed_at)
 
         resolved = service.decide_gap("gap-1", gap_decision_command(decision="resolve_gap"))
         reopened = service.decide_gap("gap-1", gap_decision_command(decision="reopen_gap"))

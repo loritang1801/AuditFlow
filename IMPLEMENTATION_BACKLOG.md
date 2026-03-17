@@ -21,13 +21,13 @@ Implemented:
 
 ### 2. API Contract Convergence
 
-Status: not started
+Status: partially implemented
 
 Missing or partial:
 
-1. Request/response shapes still diverge from the full API contract.
+1. Workspace/cycle resource models now carry contract-aligned slug/owner/period/snapshot fields and accept contract request aliases, but list endpoints still return simplified bare arrays instead of the shared paginated envelope.
 2. Product routes now expose domain-error mapping, but idempotency enforcement and full envelope parity are still missing.
-3. Workspace/cycle write endpoints are incomplete.
+3. Workspace/cycle write endpoints still do not cover the full contract surface beyond create/read plus current query filters.
 4. SSE and async event surfaces are not exposed at the product layer.
 
 ### 3. Ingestion and Connectors

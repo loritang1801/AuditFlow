@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class AuditFlowModel(BaseModel):
@@ -11,24 +11,44 @@ class AuditFlowModel(BaseModel):
 
 
 class AuditWorkspaceSummary(AuditFlowModel):
-    workspace_id: str
-    workspace_name: str
-    framework_name: str
+    workspace_id: str = Field(serialization_alias="id")
+    workspace_name: str = Field(serialization_alias="name")
+    slug: str
+    framework_name: str = Field(serialization_alias="default_framework")
     workspace_status: str
+    default_owner_user_id: str | None = None
+    created_at: datetime
 
 
 class CreateWorkspaceCommand(AuditFlowModel):
-    workspace_name: str = Field(min_length=1)
-    framework_name: str = "SOC2"
+    workspace_name: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("workspace_name", "name"),
+        serialization_alias="name",
+    )
+    slug: str | None = None
+    framework_name: str = Field(
+        default="SOC2",
+        validation_alias=AliasChoices("framework_name", "default_framework"),
+        serialization_alias="default_framework",
+    )
     workspace_status: Literal["active"] = "active"
+    default_owner_user_id: str | None = None
+    settings: dict[str, Any] = Field(default_factory=dict)
 
 
 class AuditCycleSummary(AuditFlowModel):
-    cycle_id: str
+    cycle_id: str = Field(serialization_alias="id")
     workspace_id: str
     cycle_name: str
-    cycle_status: str
-    framework_name: str
+    cycle_status: str = Field(serialization_alias="status")
+    framework_name: str = Field(serialization_alias="framework")
+    audit_period_start: date | None = None
+    audit_period_end: date | None = None
+    owner_user_id: str | None = None
+    current_snapshot_version: int = 0
+    last_mapped_at: datetime | None = None
+    last_reviewed_at: datetime | None = None
     coverage_status: str
     review_queue_count: int
     open_gap_count: int
@@ -38,7 +58,14 @@ class AuditCycleSummary(AuditFlowModel):
 class CreateCycleCommand(AuditFlowModel):
     workspace_id: str
     cycle_name: str = Field(min_length=1)
-    framework_name: str = "SOC2"
+    framework_name: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("framework_name", "default_framework", "framework"),
+        serialization_alias="framework",
+    )
+    audit_period_start: date | None = None
+    audit_period_end: date | None = None
+    owner_user_id: str | None = None
     cycle_status: Literal["draft"] = "draft"
 
 
@@ -46,7 +73,7 @@ class ControlCoverageSummary(AuditFlowModel):
     control_state_id: str
     control_code: str
     coverage_status: str
-    mapped_evidence_count: int
+    mapped_evidence_count: int = Field(serialization_alias="accepted_mapping_count")
     open_gap_count: int
 
 
@@ -55,7 +82,7 @@ class MappingSummary(AuditFlowModel):
     control_state_id: str
     control_code: str
     mapping_status: str
-    evidence_item_id: str
+    evidence_item_id: str = Field(serialization_alias="evidence_id")
     rationale_summary: str
     citation_refs: list[dict[str, Any]] = Field(default_factory=list)
     updated_at: datetime
@@ -72,8 +99,10 @@ class ReviewQueueItem(AuditFlowModel):
     control_state_id: str
     control_code: str
     coverage_status: str
-    evidence_item_id: str
+    evidence_item_id: str = Field(serialization_alias="evidence_id")
     rationale_summary: str
+    confidence: float | None = None
+    ranking_score: float | None = None
     citation_refs: list[dict[str, Any]] = Field(default_factory=list)
     updated_at: datetime
 
@@ -127,7 +156,7 @@ class ImportListResponse(AuditFlowModel):
 
 
 class GapSummary(AuditFlowModel):
-    gap_id: str
+    gap_id: str = Field(serialization_alias="id")
     control_state_id: str
     gap_type: str
     severity: str
@@ -145,7 +174,7 @@ class EvidenceChunk(AuditFlowModel):
 
 
 class EvidenceDetail(AuditFlowModel):
-    evidence_id: str
+    evidence_id: str = Field(serialization_alias="id")
     audit_cycle_id: str
     title: str
     evidence_type: str
@@ -166,8 +195,8 @@ class NarrativeSummary(AuditFlowModel):
 
 
 class ExportPackageSummary(AuditFlowModel):
-    package_id: str
-    cycle_id: str
+    package_id: str = Field(serialization_alias="id")
+    cycle_id: str = Field(serialization_alias="audit_cycle_id")
     snapshot_version: int
     status: str
     artifact_id: str | None = None

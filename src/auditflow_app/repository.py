@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+import re
+from datetime import UTC, date, datetime
 from typing import Protocol
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, select
+from sqlalchemy import JSON, Boolean, Date, DateTime, Integer, String, Text, UniqueConstraint, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -89,6 +90,11 @@ SEEDED_CONTROL_STATE_IDS = {
 }
 
 DEFAULT_REVIEWER_ID = "reviewer-demo"
+
+
+def _slugify(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+    return normalized.strip("-") or f"audit-workspace-{uuid4().hex[:8]}"
 
 
 class AuditFlowRepository(Protocol):
@@ -225,8 +231,13 @@ class AuditWorkspaceRow(Base):
 
     workspace_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     workspace_name: Mapped[str] = mapped_column(String(255))
+    slug: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     framework_name: Mapped[str] = mapped_column(String(50))
     workspace_status: Mapped[str] = mapped_column(String(50))
+    default_owner_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    settings_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 
 
 class AuditCycleRow(Base):
@@ -237,10 +248,18 @@ class AuditCycleRow(Base):
     cycle_name: Mapped[str] = mapped_column(String(255))
     cycle_status: Mapped[str] = mapped_column(String(50))
     framework_name: Mapped[str] = mapped_column(String(50))
+    audit_period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    audit_period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_snapshot_version: Mapped[int] = mapped_column(Integer, default=0)
+    last_mapped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    last_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     coverage_status: Mapped[str] = mapped_column(String(50))
     review_queue_count: Mapped[int] = mapped_column(Integer, default=0)
     open_gap_count: Mapped[int] = mapped_column(Integer, default=0)
     latest_workflow_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 
 
 class ControlCatalogRow(Base):
@@ -432,8 +451,13 @@ class SqlAlchemyAuditFlowRepository:
                 AuditWorkspaceRow(
                     workspace_id="audit-ws-1",
                     workspace_name="Acme Security Workspace",
+                    slug="acme-security-workspace",
                     framework_name="SOC2",
                     workspace_status="active",
+                    default_owner_user_id="owner-acme-audit",
+                    settings_payload={"freshness_days_default": 90},
+                    created_at=now,
+                    updated_at=now,
                 )
             )
             session.add(
@@ -443,10 +467,18 @@ class SqlAlchemyAuditFlowRepository:
                     cycle_name="SOC2 2026",
                     cycle_status="pending_review",
                     framework_name="SOC2",
+                    audit_period_start=date(2026, 1, 1),
+                    audit_period_end=date(2026, 12, 31),
+                    owner_user_id="owner-acme-audit",
+                    current_snapshot_version=1,
+                    last_mapped_at=now,
+                    last_reviewed_at=now,
                     coverage_status="pending_review",
                     review_queue_count=1,
                     open_gap_count=1,
                     latest_workflow_run_id=None,
+                    created_at=now,
+                    updated_at=now,
                 )
             )
             self._seed_cycle_control_states(
@@ -540,8 +572,11 @@ class SqlAlchemyAuditFlowRepository:
         return AuditWorkspaceSummary(
             workspace_id=row.workspace_id,
             workspace_name=row.workspace_name,
+            slug=row.slug,
             framework_name=row.framework_name,
             workspace_status=row.workspace_status,
+            default_owner_user_id=row.default_owner_user_id,
+            created_at=row.created_at,
         )
 
     @staticmethod
@@ -552,6 +587,12 @@ class SqlAlchemyAuditFlowRepository:
             cycle_name=row.cycle_name,
             cycle_status=row.cycle_status,
             framework_name=row.framework_name,
+            audit_period_start=row.audit_period_start,
+            audit_period_end=row.audit_period_end,
+            owner_user_id=row.owner_user_id,
+            current_snapshot_version=row.current_snapshot_version,
+            last_mapped_at=row.last_mapped_at,
+            last_reviewed_at=row.last_reviewed_at,
             coverage_status=row.coverage_status,
             review_queue_count=row.review_queue_count,
             open_gap_count=row.open_gap_count,
@@ -669,20 +710,27 @@ class SqlAlchemyAuditFlowRepository:
 
     def create_workspace(self, command: CreateWorkspaceCommand) -> AuditWorkspaceSummary:
         workspace_id = f"audit-ws-{uuid4().hex[:10]}"
+        now = self._utcnow_naive()
+        slug = command.slug or _slugify(command.workspace_name)
         with self.session_factory.begin() as session:
+            existing_slug = session.scalar(
+                select(AuditWorkspaceRow.workspace_id).where(AuditWorkspaceRow.slug == slug).limit(1)
+            )
+            if existing_slug is not None:
+                raise ValueError("WORKSPACE_SLUG_ALREADY_EXISTS")
             row = AuditWorkspaceRow(
                 workspace_id=workspace_id,
                 workspace_name=command.workspace_name,
+                slug=slug,
                 framework_name=command.framework_name,
                 workspace_status=command.workspace_status,
+                default_owner_user_id=command.default_owner_user_id,
+                settings_payload=command.settings,
+                created_at=now,
+                updated_at=now,
             )
             session.add(row)
-        return AuditWorkspaceSummary(
-            workspace_id=workspace_id,
-            workspace_name=command.workspace_name,
-            framework_name=command.framework_name,
-            workspace_status=command.workspace_status,
-        )
+        return self.get_workspace(workspace_id)
 
     def get_workspace(self, workspace_id: str) -> AuditWorkspaceSummary:
         with self.session_factory() as session:
@@ -693,10 +741,12 @@ class SqlAlchemyAuditFlowRepository:
 
     def create_cycle(self, command: CreateCycleCommand) -> AuditCycleSummary:
         cycle_id = f"cycle-{uuid4().hex[:10]}"
+        now = self._utcnow_naive()
         with self.session_factory.begin() as session:
             workspace_row = session.get(AuditWorkspaceRow, command.workspace_id)
             if workspace_row is None:
                 raise KeyError(command.workspace_id)
+            framework_name = command.framework_name or workspace_row.framework_name
             existing_cycle = session.scalar(
                 select(AuditCycleRow.cycle_id)
                 .where(AuditCycleRow.workspace_id == command.workspace_id)
@@ -711,11 +761,19 @@ class SqlAlchemyAuditFlowRepository:
                 workspace_id=command.workspace_id,
                 cycle_name=command.cycle_name,
                 cycle_status=command.cycle_status,
-                framework_name=command.framework_name,
+                framework_name=framework_name,
+                audit_period_start=command.audit_period_start,
+                audit_period_end=command.audit_period_end,
+                owner_user_id=command.owner_user_id or workspace_row.default_owner_user_id,
+                current_snapshot_version=0,
+                last_mapped_at=None,
+                last_reviewed_at=None,
                 coverage_status="not_started",
                 review_queue_count=0,
                 open_gap_count=0,
                 latest_workflow_run_id=None,
+                created_at=now,
+                updated_at=now,
             )
             session.add(cycle_row)
             session.flush()
@@ -723,7 +781,7 @@ class SqlAlchemyAuditFlowRepository:
             self._seed_cycle_control_states(
                 session,
                 cycle_id=cycle_id,
-                framework_name=command.framework_name,
+                framework_name=framework_name,
             )
             session.flush()
             self._refresh_cycle_counts(session, cycle_id)
@@ -1232,6 +1290,8 @@ class SqlAlchemyAuditFlowRepository:
                 self._refresh_control_state(session, control_row.control_state_id)
             self._refresh_cycle_counts(session, cycle_id)
             cycle_row.latest_workflow_run_id = workflow_run_id
+            cycle_row.last_mapped_at = now
+            cycle_row.updated_at = now
             if cycle_row.cycle_status == "exported":
                 cycle_row.cycle_status = "pending_review"
                 cycle_row.coverage_status = "pending_review"
@@ -1269,6 +1329,9 @@ class SqlAlchemyAuditFlowRepository:
             mapping_row = session.get(MappingRow, mapping_id)
             if mapping_row is None:
                 raise KeyError(mapping_id)
+            cycle_row = session.get(AuditCycleRow, mapping_row.cycle_id)
+            if cycle_row is None:
+                raise KeyError(mapping_row.cycle_id)
             if command.expected_updated_at is not None and not self._timestamps_match(
                 mapping_row.updated_at,
                 command.expected_updated_at,
@@ -1292,7 +1355,10 @@ class SqlAlchemyAuditFlowRepository:
             else:
                 mapping_row.mapping_status = "rejected"
             mapping_row.reviewer_locked = True
-            mapping_row.updated_at = self._utcnow_naive()
+            review_time = self._utcnow_naive()
+            mapping_row.updated_at = review_time
+            cycle_row.last_reviewed_at = review_time
+            cycle_row.updated_at = review_time
             self._append_review_decision(
                 session,
                 cycle_id=mapping_row.cycle_id,
@@ -1323,6 +1389,12 @@ class SqlAlchemyAuditFlowRepository:
             gap_row = session.get(GapRow, gap_id)
             if gap_row is None:
                 raise KeyError(gap_id)
+            control_row = session.get(ControlCoverageRow, gap_row.control_state_id)
+            if control_row is None:
+                raise KeyError(gap_row.control_state_id)
+            cycle_row = session.get(AuditCycleRow, control_row.cycle_id)
+            if cycle_row is None:
+                raise KeyError(control_row.cycle_id)
             if command.expected_updated_at is not None and not self._timestamps_match(
                 gap_row.updated_at,
                 command.expected_updated_at,
@@ -1344,10 +1416,10 @@ class SqlAlchemyAuditFlowRepository:
                     raise ValueError("GAP_STATUS_CONFLICT")
                 gap_row.status = "acknowledged"
                 gap_row.resolved_at = None
-            gap_row.updated_at = self._utcnow_naive()
-            control_row = session.get(ControlCoverageRow, gap_row.control_state_id)
-            if control_row is None:
-                raise KeyError(gap_row.control_state_id)
+            review_time = self._utcnow_naive()
+            gap_row.updated_at = review_time
+            cycle_row.last_reviewed_at = review_time
+            cycle_row.updated_at = review_time
             self._append_review_decision(
                 session,
                 cycle_id=control_row.cycle_id,
@@ -1390,9 +1462,14 @@ class SqlAlchemyAuditFlowRepository:
             cycle_row = session.get(AuditCycleRow, cycle_id)
             if cycle_row is None:
                 raise KeyError(cycle_id)
+            processed_at = self._utcnow_naive()
             cycle_row.cycle_status = "pending_review"
             cycle_row.coverage_status = "pending_review"
             cycle_row.latest_workflow_run_id = workflow_run_id
+            cycle_row.last_mapped_at = processed_at
+            cycle_row.updated_at = processed_at
+            if checkpoint_seq > 0:
+                cycle_row.current_snapshot_version = max(cycle_row.current_snapshot_version, 1)
             self._refresh_cycle_counts(session, cycle_id)
             if checkpoint_seq > 0 and cycle_row.review_queue_count == 0 and cycle_row.open_gap_count == 0:
                 cycle_row.cycle_status = "reviewed"
@@ -1418,7 +1495,9 @@ class SqlAlchemyAuditFlowRepository:
             cycle_row.cycle_status = "exported"
             cycle_row.coverage_status = "covered"
             cycle_row.latest_workflow_run_id = workflow_run_id
+            cycle_row.current_snapshot_version = max(cycle_row.current_snapshot_version, snapshot_version)
             cycle_row.review_queue_count = 0
+            cycle_row.updated_at = self._normalize_timestamp(created_at) or self._utcnow_naive()
 
             control_rows = session.scalars(
                 select(ControlCoverageRow).where(ControlCoverageRow.cycle_id == cycle_id)

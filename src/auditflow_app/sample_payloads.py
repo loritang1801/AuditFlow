@@ -150,11 +150,19 @@ def export_create_command(
     }
 
 
-def workspace_create_command(*, workspace_name: str = "AuditFlow Demo Workspace") -> dict:
+def workspace_create_command(
+    *,
+    workspace_name: str = "AuditFlow Demo Workspace",
+    slug: str | None = None,
+    default_owner_user_id: str | None = None,
+) -> dict:
     return {
         "workspace_name": workspace_name,
+        "slug": slug,
         "framework_name": "SOC2",
         "workspace_status": "active",
+        "default_owner_user_id": default_owner_user_id,
+        "settings": {"freshness_days_default": 90},
     }
 
 
@@ -162,10 +170,16 @@ def cycle_create_command(
     *,
     workspace_id: str = "audit-ws-1",
     cycle_name: str = "SOC2 Demo Cycle",
+    audit_period_start: str = "2026-01-01",
+    audit_period_end: str = "2026-12-31",
+    owner_user_id: str | None = None,
 ) -> dict:
     return {
         "workspace_id": workspace_id,
         "cycle_name": cycle_name,
         "framework_name": "SOC2",
+        "audit_period_start": audit_period_start,
+        "audit_period_end": audit_period_end,
+        "owner_user_id": owner_user_id,
         "cycle_status": "draft",
     }

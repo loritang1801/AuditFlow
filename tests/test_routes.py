@@ -58,6 +58,15 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
         self.assertEqual(status_code, 400)
         self.assertEqual(payload["error"]["code"], "INVALID_REVIEW_QUEUE_SORT")
 
+    def test_maps_duplicate_workspace_slug_to_409(self) -> None:
+        status_code, payload = map_domain_error(
+            ValueError("WORKSPACE_SLUG_ALREADY_EXISTS"),
+            path="/api/v1/auditflow/workspaces",
+        )
+
+        self.assertEqual(status_code, 409)
+        self.assertEqual(payload["error"]["code"], "WORKSPACE_SLUG_ALREADY_EXISTS")
+
 
 if __name__ == "__main__":
     unittest.main()
