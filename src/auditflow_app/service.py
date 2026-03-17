@@ -396,6 +396,24 @@ class AuditFlowAppService:
         if cached is not None:
             return cached
         response = self.repository.review_mapping(mapping_id, command)
+        context = self.repository.get_mapping_event_context(mapping_id)
+        decisions = self.repository.list_review_decisions(context["cycle_id"], mapping_id=mapping_id)
+        latest_decision_id = decisions.items[0].review_decision_id if decisions.items else None
+        self._emit_product_event(
+            event_name="auditflow.review.recorded",
+            workflow_run_id=f"auditflow-review-{mapping_id}-{uuid4().hex[:8]}",
+            aggregate_type="evidence_mapping",
+            aggregate_id=mapping_id,
+            node_name="mapping_review_recorded",
+            payload={
+                "cycle_id": context["cycle_id"],
+                "workspace_id": context["workspace_id"],
+                "review_decision_id": latest_decision_id,
+                "mapping_id": mapping_id,
+                "control_state_id": context["control_state_id"],
+                "decision": command.decision,
+            },
+        )
         self._store_idempotent_response(
             operation="auditflow.review_mapping",
             idempotency_key=idempotency_key,
@@ -423,6 +441,24 @@ class AuditFlowAppService:
         if cached is not None:
             return cached
         response = self.repository.decide_gap(gap_id, command)
+        context = self.repository.get_gap_event_context(gap_id)
+        decisions = self.repository.list_review_decisions(context["cycle_id"], gap_id=gap_id)
+        latest_decision_id = decisions.items[0].review_decision_id if decisions.items else None
+        self._emit_product_event(
+            event_name="auditflow.review.recorded",
+            workflow_run_id=f"auditflow-gap-{gap_id}-{uuid4().hex[:8]}",
+            aggregate_type="gap_record",
+            aggregate_id=gap_id,
+            node_name="gap_review_recorded",
+            payload={
+                "cycle_id": context["cycle_id"],
+                "workspace_id": context["workspace_id"],
+                "review_decision_id": latest_decision_id,
+                "gap_id": gap_id,
+                "control_state_id": context["control_state_id"],
+                "decision": command.decision,
+            },
+        )
         self._store_idempotent_response(
             operation="auditflow.decide_gap",
             idempotency_key=idempotency_key,
@@ -501,11 +537,26 @@ class AuditFlowAppService:
             }
         )
         response = self._to_run_response(result)
-        self.repository.record_export_result(
+        export_package = self.repository.record_export_result(
             cycle_id=command.audit_cycle_id,
             workflow_run_id=response.workflow_run_id,
             snapshot_version=command.working_snapshot_version,
             checkpoint_seq=response.checkpoint_seq,
+        )
+        self._emit_product_event(
+            event_name="auditflow.package.ready",
+            workflow_run_id=response.workflow_run_id,
+            aggregate_type="audit_package",
+            aggregate_id=export_package.package_id,
+            node_name="export_completed",
+            payload={
+                "cycle_id": command.audit_cycle_id,
+                "workspace_id": command.workspace_id,
+                "package_id": export_package.package_id,
+                "snapshot_version": export_package.snapshot_version,
+                "artifact_id": export_package.artifact_id,
+                "organization_id": command.organization_id,
+            },
         )
         return response
 
@@ -543,6 +594,20 @@ class AuditFlowAppService:
             and latest_export.status in {"queued", "building"}
         ):
             raise ValueError("EXPORT_ALREADY_RUNNING")
+        self._emit_product_event(
+            event_name="auditflow.export.progress",
+            workflow_run_id=command.workflow_run_id,
+            aggregate_type="audit_cycle",
+            aggregate_id=cycle_id,
+            node_name="export_requested",
+            payload={
+                "cycle_id": cycle_id,
+                "workspace_id": command.workspace_id,
+                "snapshot_version": command.snapshot_version,
+                "status": "building",
+                "organization_id": command.organization_id,
+            },
+        )
         self.generate_export(
             ExportGenerationCommand(
                 workflow_run_id=command.workflow_run_id,

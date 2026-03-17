@@ -30,6 +30,7 @@
 - Import acceptance now collapses duplicate upload and connector requests before enqueueing normalization jobs
 - Import processing now persists raw artifact text, normalized artifact text, and multi-chunk evidence rows before reviewer mapping
 - Upload imports now normalize CSV, JSON, Markdown, HTML, and plain-text artifacts into structured evidence chunks with parser metadata
+- Reviewer mutations now emit `auditflow.review.recorded`, and export submission/completion now emit `auditflow.export.progress` plus package-ready outbox events for SSE consumers
 - Reviewer actions now append immutable `review_decision` audit rows for mapping and gap decisions
 - Cycle-level gap records can now be queried with status/severity filters for reviewer workbench backends
 - Review history can now be queried at the cycle level with optional mapping/gap filters for reviewer workbench backends

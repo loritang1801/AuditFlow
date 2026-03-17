@@ -158,6 +158,10 @@ class AuditFlowRepository(Protocol):
         gap_id: str | None = None,
     ) -> ReviewDecisionListResponse: ...
 
+    def get_mapping_event_context(self, mapping_id: str) -> dict[str, str]: ...
+
+    def get_gap_event_context(self, gap_id: str) -> dict[str, str]: ...
+
     def review_mapping(self, mapping_id: str, command: MappingReviewCommand) -> MappingReviewResponse: ...
 
     def list_imports(
@@ -1054,6 +1058,39 @@ class SqlAlchemyAuditFlowRepository:
             rows = session.scalars(stmt.order_by(ReviewDecisionRow.created_at.desc())).all()
             items = [self._to_review_decision(row) for row in rows]
             return ReviewDecisionListResponse(cycle_id=cycle_id, total_count=len(items), items=items)
+
+    def get_mapping_event_context(self, mapping_id: str) -> dict[str, str]:
+        with self.session_factory() as session:
+            mapping_row = session.get(MappingRow, mapping_id)
+            if mapping_row is None:
+                raise KeyError(mapping_id)
+            cycle_row = session.get(AuditCycleRow, mapping_row.cycle_id)
+            if cycle_row is None:
+                raise KeyError(mapping_row.cycle_id)
+            return {
+                "mapping_id": mapping_id,
+                "cycle_id": mapping_row.cycle_id,
+                "workspace_id": cycle_row.workspace_id,
+                "control_state_id": mapping_row.control_state_id,
+            }
+
+    def get_gap_event_context(self, gap_id: str) -> dict[str, str]:
+        with self.session_factory() as session:
+            gap_row = session.get(GapRow, gap_id)
+            if gap_row is None:
+                raise KeyError(gap_id)
+            control_row = session.get(ControlCoverageRow, gap_row.control_state_id)
+            if control_row is None:
+                raise KeyError(gap_row.control_state_id)
+            cycle_row = session.get(AuditCycleRow, control_row.cycle_id)
+            if cycle_row is None:
+                raise KeyError(control_row.cycle_id)
+            return {
+                "gap_id": gap_id,
+                "cycle_id": control_row.cycle_id,
+                "workspace_id": cycle_row.workspace_id,
+                "control_state_id": gap_row.control_state_id,
+            }
 
     def list_imports(
         self,

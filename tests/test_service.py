@@ -689,6 +689,39 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(decision_rows[1].from_status, "acknowledged")
         self.assertEqual(decision_rows[1].to_status, "resolved")
 
+    def test_mapping_review_emits_review_recorded_outbox_event(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command(comment="Accepting mapped evidence."))
+        pending = service.runtime_stores.outbox_store.list_pending()
+        matching = [item.event for item in pending if item.event.event_name == "auditflow.review.recorded"]
+
+        self.assertTrue(any(event.payload.get("mapping_id") == "mapping-1" for event in matching))
+
+    def test_create_export_package_emits_export_progress_and_ready_events(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command())
+        service.decide_gap("gap-1", gap_decision_command())
+        package = service.create_export_package("cycle-1", export_create_command(workflow_run_id="auditflow-event-export-1"))
+        pending = service.runtime_stores.outbox_store.list_pending()
+        matching = [
+            item.event
+            for item in pending
+            if item.event.workflow_run_id == "auditflow-event-export-1"
+        ]
+
+        self.assertTrue(any(event.event_name == "auditflow.export.progress" for event in matching))
+        self.assertTrue(
+            any(
+                event.event_name == "auditflow.package.ready"
+                and event.payload.get("package_id") == package.package_id
+                for event in matching
+            )
+        )
+
     def test_list_review_decisions_supports_cycle_and_subject_filters(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
