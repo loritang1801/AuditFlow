@@ -752,6 +752,21 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(state.current_state, "human_review")
         self.assertEqual(state.workflow_type, "auditflow_cycle")
 
+    def test_process_cycle_emits_mapping_progress_event(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.process_cycle(cycle_processing_command(workflow_run_id="auditflow-progress-cycle-1"))
+        pending = service.runtime_stores.outbox_store.list_pending()
+        matching = [
+            item.event
+            for item in pending
+            if item.event.workflow_run_id == "auditflow-progress-cycle-1"
+            and item.event.event_name == "auditflow.mapping.progress"
+        ]
+
+        self.assertTrue(any(event.payload.get("cycle_id") == "cycle-1" for event in matching))
+
     def test_review_mapping_and_generate_export(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)

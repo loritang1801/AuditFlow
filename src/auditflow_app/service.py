@@ -515,6 +515,21 @@ class AuditFlowAppService:
             workflow_run_id=response.workflow_run_id,
             checkpoint_seq=response.checkpoint_seq,
         )
+        dashboard = self.repository.get_cycle_dashboard(command.audit_cycle_id)
+        self._emit_product_event(
+            event_name="auditflow.mapping.progress",
+            workflow_run_id=response.workflow_run_id,
+            aggregate_type="audit_cycle",
+            aggregate_id=command.audit_cycle_id,
+            node_name="cycle_processing_completed",
+            payload={
+                "cycle_id": command.audit_cycle_id,
+                "workspace_id": command.workspace_id,
+                "mapped_controls": dashboard.accepted_mapping_count,
+                "pending_review_count": dashboard.review_queue_count,
+                "organization_id": command.organization_id,
+            },
+        )
         return response
 
     def generate_export(self, command: ExportGenerationCommand | dict[str, Any]) -> AuditFlowRunResponse:
