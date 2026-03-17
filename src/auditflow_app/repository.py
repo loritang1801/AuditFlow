@@ -1226,12 +1226,12 @@ class SqlAlchemyAuditFlowRepository:
                 gap_row.status = "resolved"
                 gap_row.resolved_at = self._utcnow_naive()
             elif command.decision == "reopen_gap":
-                if gap_row.status not in {"resolved", "acknowledged"}:
+                if gap_row.status != "resolved":
                     raise ValueError("GAP_STATUS_CONFLICT")
                 gap_row.status = "open"
                 gap_row.resolved_at = None
             else:
-                if gap_row.status == "resolved":
+                if gap_row.status != "open":
                     raise ValueError("GAP_STATUS_CONFLICT")
                 gap_row.status = "acknowledged"
                 gap_row.resolved_at = None

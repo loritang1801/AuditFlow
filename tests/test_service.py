@@ -140,6 +140,22 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(open_gaps[0].gap_id, "gap-1")
         self.assertEqual(high_gaps, [])
 
+    def test_gap_transitions_enforce_stricter_terminal_policy(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with self.assertRaisesRegex(ValueError, "GAP_STATUS_CONFLICT"):
+            service.decide_gap("gap-1", gap_decision_command(decision="acknowledge"))
+
+        with self.assertRaisesRegex(ValueError, "GAP_STATUS_CONFLICT"):
+            service.decide_gap("gap-1", gap_decision_command(decision="reopen_gap"))
+
+        resolved = service.decide_gap("gap-1", gap_decision_command(decision="resolve_gap"))
+        reopened = service.decide_gap("gap-1", gap_decision_command(decision="reopen_gap"))
+
+        self.assertEqual(resolved.status, "resolved")
+        self.assertEqual(reopened.status, "open")
+
     def test_duplicate_upload_imports_collapse_before_dispatch(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)

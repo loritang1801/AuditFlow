@@ -37,7 +37,7 @@ Product-specific thin adapters now live under `src/auditflow_app/`.
 - Build a domain-facing application service from `auditflow_app.bootstrap.build_app_service`
 - Use `auditflow_app.app:create_app` as a FastAPI factory when `fastapi` is installed
 - Default product repository is now SQLAlchemy-backed and shares the same runtime engine/session as the workflow layer
-- Current product API covers workspace/cycle creation, artifact-backed imports with format-aware CSV/JSON/text chunking, route-level domain error mapping, review/gap decisions plus review-decision history and cycle-level gap listing, export-readiness validation, narratives, workflow-backed cycle processing, and export package projection
+- Current product API covers workspace/cycle creation, artifact-backed imports with format-aware CSV/JSON/text chunking, route-level domain error mapping, stricter review/gap transition rules plus review-decision history and cycle-level gap listing, export-readiness validation, narratives, workflow-backed cycle processing, and export package projection
 - Run the local workflow smoke script:
 
 ```powershell

@@ -566,6 +566,11 @@ Allowed decisions:
 - `reopen_gap`
 - `acknowledge`
 
+Rules:
+
+1. `acknowledge` is only valid when the current gap status is `open`
+2. `reopen_gap` is only valid when the current gap status is `resolved`
+
 Response:
 
 - `200 OK` with updated `GapSummary`
