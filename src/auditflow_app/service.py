@@ -25,6 +25,7 @@ from .api_models import (
     ImportAcceptedResponse,
     ImportDispatchResponse,
     ImportListResponse,
+    MappingListResponse,
     ExportCreateCommand,
     ExportGenerationCommand,
     ExportPackageSummary,
@@ -107,6 +108,19 @@ class AuditFlowAppService:
 
     def list_controls(self, cycle_id: str) -> list[ControlCoverageSummary]:
         return self.repository.list_controls(cycle_id)
+
+    def list_mappings(
+        self,
+        cycle_id: str,
+        *,
+        control_state_id: str | None = None,
+        mapping_status: str | None = None,
+    ) -> MappingListResponse:
+        return self.repository.list_mappings(
+            cycle_id,
+            control_state_id=control_state_id,
+            mapping_status=mapping_status,
+        )
 
     def get_control_detail(self, control_state_id: str) -> ControlDetailResponse:
         return self.repository.get_control_detail(control_state_id)

@@ -65,6 +65,7 @@ class AuditFlowServiceTests(unittest.TestCase):
         cycles = service.list_cycles("audit-ws-1")
         dashboard = service.get_cycle_dashboard("cycle-1")
         gaps = service.list_gaps("cycle-1")
+        mappings = service.list_mappings("cycle-1")
         review_queue = service.list_review_queue("cycle-1")
         controls = service.list_controls("cycle-1")
         control_detail = service.get_control_detail("control-state-1")
@@ -75,6 +76,8 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(dashboard.cycle.cycle_id, "cycle-1")
         self.assertEqual(len(gaps), 1)
         self.assertEqual(gaps[0].gap_id, "gap-1")
+        self.assertEqual(mappings.total_count, 1)
+        self.assertEqual(mappings.items[0].mapping_id, "mapping-1")
         self.assertEqual(review_queue.total_count, 1)
         self.assertEqual([control.control_code for control in controls], EXPECTED_SOC2_CONTROL_CODES)
         self.assertEqual(control_detail.control_state.control_code, "CC6.1")
@@ -139,6 +142,19 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(len(open_gaps), 1)
         self.assertEqual(open_gaps[0].gap_id, "gap-1")
         self.assertEqual(high_gaps, [])
+
+    def test_list_mappings_supports_cycle_and_status_filters(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        proposed = service.list_mappings("cycle-1", mapping_status="proposed")
+        accepted = service.list_mappings("cycle-1", mapping_status="accepted")
+        by_control = service.list_mappings("cycle-1", control_state_id="control-state-1")
+
+        self.assertEqual(proposed.total_count, 1)
+        self.assertEqual(proposed.items[0].mapping_id, "mapping-1")
+        self.assertEqual(accepted.total_count, 0)
+        self.assertEqual(by_control.total_count, 1)
 
     def test_gap_transitions_enforce_stricter_terminal_policy(self) -> None:
         service = build_app_service()

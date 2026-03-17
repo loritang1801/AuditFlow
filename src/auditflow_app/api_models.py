@@ -61,6 +61,12 @@ class MappingSummary(AuditFlowModel):
     updated_at: datetime
 
 
+class MappingListResponse(AuditFlowModel):
+    cycle_id: str
+    total_count: int
+    items: list[MappingSummary] = Field(default_factory=list)
+
+
 class ReviewQueueItem(AuditFlowModel):
     mapping_id: str
     control_state_id: str

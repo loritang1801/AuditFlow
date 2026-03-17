@@ -30,6 +30,7 @@ from .api_models import (
     ImportAcceptedResponse,
     ImportDispatchResponse,
     ImportListResponse,
+    MappingListResponse,
     ExportCreateCommand,
     ExportGenerationCommand,
     ExportPackageSummary,
@@ -130,6 +131,18 @@ def create_fastapi_app(service: AuditFlowAppService):
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/controls")
     def list_controls(cycle_id: str) -> list[ControlCoverageSummary]:
         return service.list_controls(cycle_id)
+
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/mappings", response_model=MappingListResponse)
+    def list_mappings(
+        cycle_id: str,
+        control_state_id: str | None = None,
+        mapping_status: str | None = None,
+    ) -> MappingListResponse:
+        return service.list_mappings(
+            cycle_id,
+            control_state_id=control_state_id,
+            mapping_status=mapping_status,
+        )
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/controls/{control_state_id}", response_model=ControlDetailResponse)
     def get_control_detail(cycle_id: str, control_state_id: str) -> ControlDetailResponse:

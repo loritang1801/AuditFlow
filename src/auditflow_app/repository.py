@@ -26,6 +26,7 @@ from .api_models import (
     GapSummary,
     ImportAcceptedResponse,
     ImportListResponse,
+    MappingListResponse,
     MappingReviewCommand,
     MappingReviewResponse,
     MappingSummary,
@@ -101,6 +102,14 @@ class AuditFlowRepository(Protocol):
     def get_cycle_dashboard(self, cycle_id: str) -> AuditCycleDashboardResponse: ...
 
     def list_controls(self, cycle_id: str) -> list[ControlCoverageSummary]: ...
+
+    def list_mappings(
+        self,
+        cycle_id: str,
+        *,
+        control_state_id: str | None = None,
+        mapping_status: str | None = None,
+    ) -> MappingListResponse: ...
 
     def get_control_detail(self, control_state_id: str) -> ControlDetailResponse: ...
 
@@ -746,6 +755,26 @@ class SqlAlchemyAuditFlowRepository:
                 .order_by(ControlCoverageRow.control_code.asc())
             ).all()
             return [self._to_control(row) for row in rows]
+
+    def list_mappings(
+        self,
+        cycle_id: str,
+        *,
+        control_state_id: str | None = None,
+        mapping_status: str | None = None,
+    ) -> MappingListResponse:
+        with self.session_factory() as session:
+            cycle_row = session.get(AuditCycleRow, cycle_id)
+            if cycle_row is None:
+                raise KeyError(cycle_id)
+            stmt = select(MappingRow).where(MappingRow.cycle_id == cycle_id)
+            if control_state_id is not None:
+                stmt = stmt.where(MappingRow.control_state_id == control_state_id)
+            if mapping_status is not None:
+                stmt = stmt.where(MappingRow.mapping_status == mapping_status)
+            rows = session.scalars(stmt.order_by(MappingRow.updated_at.desc())).all()
+            items = [self._to_mapping(row) for row in rows]
+            return MappingListResponse(cycle_id=cycle_id, total_count=len(items), items=items)
 
     def get_control_detail(self, control_state_id: str) -> ControlDetailResponse:
         with self.session_factory() as session:

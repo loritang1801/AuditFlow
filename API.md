@@ -405,6 +405,21 @@ Response:
 
 - `200 OK` with paginated `ControlMatrixRow[]`
 
+### 4.9.1 `GET /api/v1/auditflow/cycles/:cycleId/mappings`
+
+Purpose: list evidence mappings for one cycle with optional control/status filters.
+
+Auth: `reviewer` or stronger
+
+Query params:
+
+- `control_state_id`
+- `mapping_status`
+
+Response:
+
+- `200 OK` with `MappingSummary[]`
+
 ### 4.10 `GET /api/v1/auditflow/cycles/:cycleId/controls/:controlStateId`
 
 Purpose: fetch one control state with accepted mappings, pending mappings, and open gaps.
