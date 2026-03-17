@@ -26,7 +26,7 @@ Status: not started
 Missing or partial:
 
 1. Request/response shapes still diverge from the full API contract.
-2. Some routes use simplified status handling and no idempotency enforcement.
+2. Product routes now expose domain-error mapping, but idempotency enforcement and full envelope parity are still missing.
 3. Workspace/cycle write endpoints are incomplete.
 4. SSE and async event surfaces are not exposed at the product layer.
 
@@ -87,7 +87,7 @@ Implemented:
 
 Missing or partial:
 
-1. No strict snapshot freeze/validation rules.
+1. Basic export-readiness and stale/running validation now exist, but there is still no strict snapshot freeze ledger.
 2. No export manifest structure.
 3. No artifact packaging step beyond projection data.
 

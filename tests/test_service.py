@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -14,7 +15,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from auditflow_app.bootstrap import build_app_service
-from auditflow_app.repository import ArtifactBlobRow, EvidenceChunkRow, EvidenceRow, ReviewDecisionRow
+from auditflow_app.repository import ArtifactBlobRow, EvidenceChunkRow, EvidenceRow, ExportPackageRow, ReviewDecisionRow
 from auditflow_app.sample_payloads import (
     cycle_create_command,
     cycle_processing_command,
@@ -334,10 +335,61 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.addCleanup(service.close)
 
         service.review_mapping("mapping-1", mapping_review_command())
+        service.decide_gap("gap-1", gap_decision_command())
         package = service.create_export_package("cycle-1", export_create_command(workflow_run_id="auditflow-service-export-2"))
 
         self.assertEqual(package.cycle_id, "cycle-1")
         self.assertEqual(package.snapshot_version, 3)
+
+    def test_create_export_package_rejects_cycle_not_ready(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with self.assertRaisesRegex(ValueError, "CYCLE_NOT_READY_FOR_EXPORT"):
+            service.create_export_package("cycle-1", export_create_command(workflow_run_id="auditflow-export-blocked"))
+
+    def test_create_export_package_rejects_stale_snapshot(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command())
+        service.decide_gap("gap-1", gap_decision_command())
+        service.create_export_package("cycle-1", export_create_command(workflow_run_id="auditflow-export-current"))
+
+        with self.assertRaisesRegex(ValueError, "SNAPSHOT_STALE"):
+            service.create_export_package(
+                "cycle-1",
+                export_create_command(
+                    workflow_run_id="auditflow-export-stale",
+                    snapshot_version=2,
+                ),
+            )
+
+    def test_create_export_package_rejects_duplicate_running_export(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command())
+        service.decide_gap("gap-1", gap_decision_command())
+        now = datetime.now(UTC)
+        with service.repository.session_factory.begin() as session:
+            session.add(
+                ExportPackageRow(
+                    package_id="pkg-queued-1",
+                    cycle_id="cycle-1",
+                    snapshot_version=3,
+                    status="queued",
+                    artifact_id=None,
+                    workflow_run_id="auditflow-export-queued",
+                    created_at=now,
+                )
+            )
+
+        with self.assertRaisesRegex(ValueError, "EXPORT_ALREADY_RUNNING"):
+            service.create_export_package(
+                "cycle-1",
+                export_create_command(workflow_run_id="auditflow-export-duplicate"),
+            )
 
     def test_sqlalchemy_repository_persists_export_across_service_instances(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

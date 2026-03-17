@@ -687,13 +687,14 @@ class SqlAlchemyAuditFlowRepository:
                 .order_by(ExportPackageRow.created_at.desc())
             ).first()
             control_models = [self._to_control(row) for row in controls]
+            accepted_mapping_count = sum(1 for item in control_models if item.coverage_status == "covered")
             return AuditCycleDashboardResponse(
                 cycle=self._to_cycle(cycle_row),
                 review_queue_count=cycle_row.review_queue_count,
                 open_gap_count=cycle_row.open_gap_count,
-                accepted_mapping_count=sum(1 for item in control_models if item.coverage_status == "covered"),
+                accepted_mapping_count=accepted_mapping_count,
                 export_ready=(
-                    cycle_row.cycle_status in {"reviewed", "exported"}
+                    accepted_mapping_count > 0
                     and cycle_row.review_queue_count == 0
                     and cycle_row.open_gap_count == 0
                 ),
@@ -1355,14 +1356,24 @@ class SqlAlchemyAuditFlowRepository:
         cycle_row.open_gap_count = gap_count
         if len(control_rows) == 0:
             cycle_row.coverage_status = "not_started"
+            if cycle_row.cycle_status != "exported":
+                cycle_row.cycle_status = "draft"
         elif all(row.coverage_status == "covered" for row in control_rows) and review_count == 0 and gap_count == 0:
             cycle_row.coverage_status = "covered"
+            if cycle_row.cycle_status != "exported":
+                cycle_row.cycle_status = "reviewed"
         elif all(row.coverage_status == "not_started" for row in control_rows) and review_count == 0 and gap_count == 0:
             cycle_row.coverage_status = "not_started"
+            if cycle_row.cycle_status != "exported":
+                cycle_row.cycle_status = "draft"
         elif review_count > 0:
             cycle_row.coverage_status = "pending_review"
+            if cycle_row.cycle_status != "exported":
+                cycle_row.cycle_status = "pending_review"
         else:
             cycle_row.coverage_status = "needs_attention"
+            if cycle_row.cycle_status != "exported":
+                cycle_row.cycle_status = "pending_review"
 
     @classmethod
     def _seed_control_catalog(cls, session: Session) -> None:

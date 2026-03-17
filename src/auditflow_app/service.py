@@ -296,6 +296,22 @@ class AuditFlowAppService:
     ) -> ExportPackageSummary:
         if isinstance(command, dict):
             command = ExportCreateCommand.model_validate(command)
+        dashboard = self.repository.get_cycle_dashboard(cycle_id)
+        if (
+            dashboard.accepted_mapping_count == 0
+            or dashboard.review_queue_count > 0
+            or dashboard.open_gap_count > 0
+        ):
+            raise ValueError("CYCLE_NOT_READY_FOR_EXPORT")
+        latest_export = dashboard.latest_export_package
+        if latest_export is not None and latest_export.snapshot_version > command.snapshot_version:
+            raise ValueError("SNAPSHOT_STALE")
+        if (
+            latest_export is not None
+            and latest_export.snapshot_version == command.snapshot_version
+            and latest_export.status in {"queued", "building"}
+        ):
+            raise ValueError("EXPORT_ALREADY_RUNNING")
         self.generate_export(
             ExportGenerationCommand(
                 workflow_run_id=command.workflow_run_id,

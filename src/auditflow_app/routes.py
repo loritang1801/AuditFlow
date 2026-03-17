@@ -2,6 +2,16 @@ from __future__ import annotations
 
 import importlib
 
+ERROR_STATUS_BY_CODE = {
+    "CYCLE_NAME_ALREADY_EXISTS": 409,
+    "CONFLICT_STALE_RESOURCE": 409,
+    "MAPPING_ALREADY_TERMINAL": 409,
+    "GAP_STATUS_CONFLICT": 409,
+    "EXPORT_ALREADY_RUNNING": 409,
+    "SNAPSHOT_STALE": 409,
+    "CYCLE_NOT_READY_FOR_EXPORT": 422,
+}
+
 from .api_models import (
     AuditCycleSummary,
     AuditCycleDashboardResponse,
@@ -34,10 +44,38 @@ from .service import AuditFlowAppService
 from .shared_runtime import load_shared_agent_platform
 
 
+def map_domain_error(exc: Exception, *, path: str = "") -> tuple[int, dict[str, object]]:
+    if isinstance(exc, KeyError):
+        if "/workspaces/" in path:
+            code = "AUDIT_WORKSPACE_NOT_FOUND"
+        elif "/cycles/" in path:
+            code = "AUDIT_CYCLE_NOT_FOUND"
+        elif "/controls/" in path:
+            code = "CONTROL_STATE_NOT_FOUND"
+        elif "/evidence/" in path:
+            code = "EVIDENCE_NOT_FOUND"
+        elif "/exports/" in path:
+            code = "EXPORT_PACKAGE_NOT_FOUND"
+        else:
+            code = "RESOURCE_NOT_FOUND"
+        resource_id = str(exc.args[0]) if exc.args else "resource"
+        return 404, {"error": {"code": code, "message": f"{code}: {resource_id}"}}
+    if isinstance(exc, ValueError):
+        code = str(exc)
+        if code == "CONFLICT_STALE_RESOURCE" and "/mappings/" in path:
+            code = "MAPPING_REVIEW_CONFLICT"
+        status_code = ERROR_STATUS_BY_CODE.get(str(exc), 400)
+        if code == "MAPPING_REVIEW_CONFLICT":
+            status_code = 409
+        return status_code, {"error": {"code": code, "message": code}}
+    return 500, {"error": {"code": "INTERNAL_ERROR", "message": "Internal server error"}}
+
+
 def create_fastapi_app(service: AuditFlowAppService):
     ap = load_shared_agent_platform()
     try:
-        from fastapi import FastAPI
+        from fastapi import FastAPI, Request
+        from fastapi.responses import JSONResponse
     except ImportError as exc:
         errors_module = importlib.import_module(f"{ap.__name__}.errors")
         FastAPIUnavailableError = errors_module.FastAPIUnavailableError
@@ -45,6 +83,16 @@ def create_fastapi_app(service: AuditFlowAppService):
         raise FastAPIUnavailableError("fastapi is not installed") from exc
 
     app = FastAPI(title="AuditFlow API")
+
+    @app.exception_handler(KeyError)
+    def handle_key_error(request: Request, exc: KeyError):
+        status_code, payload = map_domain_error(exc, path=str(request.url.path))
+        return JSONResponse(status_code=status_code, content=payload)
+
+    @app.exception_handler(ValueError)
+    def handle_value_error(request: Request, exc: ValueError):
+        status_code, payload = map_domain_error(exc, path=str(request.url.path))
+        return JSONResponse(status_code=status_code, content=payload)
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:

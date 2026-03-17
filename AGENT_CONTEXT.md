@@ -30,6 +30,8 @@
 - Import processing now persists raw artifact text, normalized artifact text, and multi-chunk evidence rows before reviewer mapping
 - Upload imports now normalize CSV, JSON, and plain-text artifacts into structured evidence chunks with parser metadata
 - Reviewer actions now append immutable `review_decision` audit rows for mapping and gap decisions
+- `routes.py` now contains explicit domain-error-to-HTTP mapping logic for product APIs
+- Export submission now rejects cycles with no accepted mappings, open review items, stale snapshot requests, and duplicate queued exports
 - `scripts/run_import_worker.py` now supports single-dispatch and polling modes with optional seeded upload jobs
 - Shared runtime foundation lives in `D:\project\SharedAgentCore`
 - Future AuditFlow code should consume vendored shared assets instead of re-implementing registries and runtime helpers
