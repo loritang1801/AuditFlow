@@ -121,8 +121,11 @@ def create_fastapi_app(service: AuditFlowAppService):
         return service.create_cycle(command)
 
     @app.get("/api/v1/auditflow/cycles", response_model=list[AuditCycleSummary])
-    def list_cycles(workspace_id: str) -> list[AuditCycleSummary]:
-        return service.list_cycles(workspace_id)
+    def list_cycles(
+        workspace_id: str,
+        status: str | None = None,
+    ) -> list[AuditCycleSummary]:
+        return service.list_cycles(workspace_id, status=status)
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/dashboard", response_model=AuditCycleDashboardResponse)
     def get_cycle_dashboard(cycle_id: str) -> AuditCycleDashboardResponse:
@@ -187,16 +190,29 @@ def create_fastapi_app(service: AuditFlowAppService):
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/imports", response_model=ImportListResponse)
     def list_imports(
         cycle_id: str,
+        status: str | None = None,
         ingest_status: str | None = None,
         source_type: str | None = None,
     ) -> ImportListResponse:
-        return service.list_imports(cycle_id, ingest_status=ingest_status, source_type=source_type)
+        return service.list_imports(
+            cycle_id,
+            ingest_status=status or ingest_status,
+            source_type=source_type,
+        )
 
-    @app.post("/api/v1/auditflow/cycles/{cycle_id}/imports/upload", response_model=ImportAcceptedResponse)
+    @app.post(
+        "/api/v1/auditflow/cycles/{cycle_id}/imports/upload",
+        response_model=ImportAcceptedResponse,
+        status_code=202,
+    )
     def create_upload_import(cycle_id: str, command: UploadImportCommand) -> ImportAcceptedResponse:
         return service.create_upload_import(cycle_id, command)
 
-    @app.post("/api/v1/auditflow/cycles/{cycle_id}/imports/external", response_model=ImportAcceptedResponse)
+    @app.post(
+        "/api/v1/auditflow/cycles/{cycle_id}/imports/external",
+        response_model=ImportAcceptedResponse,
+        status_code=202,
+    )
     def create_external_import(cycle_id: str, command: ExternalImportCommand) -> ImportAcceptedResponse:
         return service.create_external_import(cycle_id, command)
 
@@ -228,7 +244,11 @@ def create_fastapi_app(service: AuditFlowAppService):
     def process_cycle(command: CycleProcessingCommand) -> AuditFlowRunResponse:
         return service.process_cycle(command)
 
-    @app.post("/api/v1/auditflow/cycles/{cycle_id}/exports", response_model=ExportPackageSummary)
+    @app.post(
+        "/api/v1/auditflow/cycles/{cycle_id}/exports",
+        response_model=ExportPackageSummary,
+        status_code=202,
+    )
     def create_export_package(cycle_id: str, command: ExportCreateCommand) -> ExportPackageSummary:
         return service.create_export_package(cycle_id, command)
 

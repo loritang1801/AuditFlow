@@ -100,8 +100,13 @@ class AuditFlowAppService:
             command = CreateCycleCommand.model_validate(command)
         return self.repository.create_cycle(command)
 
-    def list_cycles(self, workspace_id: str):
-        return self.repository.list_cycles(workspace_id)
+    def list_cycles(
+        self,
+        workspace_id: str,
+        *,
+        status: str | None = None,
+    ):
+        return self.repository.list_cycles(workspace_id, status=status)
 
     def get_cycle_dashboard(self, cycle_id: str) -> AuditCycleDashboardResponse:
         return self.repository.get_cycle_dashboard(cycle_id)

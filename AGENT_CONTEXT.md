@@ -33,11 +33,12 @@
 - Cycle-level gap records can now be queried with status/severity filters for reviewer workbench backends
 - Review history can now be queried at the cycle level with optional mapping/gap filters for reviewer workbench backends
 - Cycle-level mapping records can now be queried with control/state filters for reviewer workbench backends
+- Cycle list queries now support `status` filtering and import list routes now accept the contract-level `status` query alias
 - Control matrix queries now support `coverage_status` and `search` filters at the product layer
 - Review queue queries now support `control_state_id` filtering at the product layer
 - Gap transitions now enforce a stricter terminal policy: `acknowledge` only from `open`, `reopen_gap` only from `resolved`
 - `routes.py` now contains explicit domain-error-to-HTTP mapping logic for product APIs
-- Export submission now rejects cycles with no accepted mappings, open review items, stale snapshot requests, and duplicate queued exports
+- Import and export submission routes now return `202 Accepted` for async contract parity, and export submission rejects cycles with no accepted mappings, open review items, stale snapshot requests, and duplicate queued exports
 - `scripts/run_import_worker.py` now supports single-dispatch and polling modes with optional seeded upload jobs
 - Shared runtime foundation lives in `D:\project\SharedAgentCore`
 - Future AuditFlow code should consume vendored shared assets instead of re-implementing registries and runtime helpers

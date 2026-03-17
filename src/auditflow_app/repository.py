@@ -97,7 +97,12 @@ class AuditFlowRepository(Protocol):
 
     def create_cycle(self, command: CreateCycleCommand) -> AuditCycleSummary: ...
 
-    def list_cycles(self, workspace_id: str) -> list[AuditCycleSummary]: ...
+    def list_cycles(
+        self,
+        workspace_id: str,
+        *,
+        status: str | None = None,
+    ) -> list[AuditCycleSummary]: ...
 
     def get_cycle_dashboard(self, cycle_id: str) -> AuditCycleDashboardResponse: ...
 
@@ -716,13 +721,22 @@ class SqlAlchemyAuditFlowRepository:
             self._refresh_cycle_counts(session, cycle_id)
             return self._to_cycle(cycle_row)
 
-    def list_cycles(self, workspace_id: str) -> list[AuditCycleSummary]:
+    def list_cycles(
+        self,
+        workspace_id: str,
+        *,
+        status: str | None = None,
+    ) -> list[AuditCycleSummary]:
         with self.session_factory() as session:
-            rows = session.scalars(
+            stmt = (
                 select(AuditCycleRow)
                 .where(AuditCycleRow.workspace_id == workspace_id)
                 .order_by(AuditCycleRow.cycle_name.asc())
-            ).all()
+            )
+            if status is not None:
+                normalized_status = "pending_review" if status == "reviewing" else status
+                stmt = stmt.where(AuditCycleRow.cycle_status == normalized_status)
+            rows = session.scalars(stmt).all()
             return [self._to_cycle(row) for row in rows]
 
     def get_cycle_dashboard(self, cycle_id: str) -> AuditCycleDashboardResponse:

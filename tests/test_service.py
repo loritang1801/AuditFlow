@@ -117,6 +117,20 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(needs_attention, [])
         self.assertEqual([item.control_code for item in searched], ["CC6.1"])
 
+    def test_list_cycles_supports_status_filter(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        draft_cycle = service.create_cycle(
+            cycle_create_command(workspace_id="audit-ws-1", cycle_name="SOC2 2028")
+        )
+
+        reviewing = service.list_cycles("audit-ws-1", status="reviewing")
+        draft = service.list_cycles("audit-ws-1", status="draft")
+
+        self.assertEqual([item.cycle_id for item in reviewing], ["cycle-1"])
+        self.assertEqual([item.cycle_id for item in draft], [draft_cycle.cycle_id])
+
     def test_imports_and_gap_decision(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
