@@ -864,8 +864,9 @@ class AuditFlowServiceTests(unittest.TestCase):
         packages = service.list_export_packages("cycle-1")
         ready_packages = service.list_export_packages("cycle-1", status="ready")
 
-        self.assertEqual([item.package_id for item in packages[:2]], [second.package_id, first.package_id])
-        self.assertEqual(len(ready_packages), 2)
+        self.assertEqual(second.package_id, first.package_id)
+        self.assertEqual([item.package_id for item in packages], [first.package_id])
+        self.assertEqual(len(ready_packages), 1)
         self.assertTrue(all(item.snapshot_version == first.snapshot_version for item in ready_packages))
 
     def test_create_export_package_rejects_cycle_not_ready(self) -> None:

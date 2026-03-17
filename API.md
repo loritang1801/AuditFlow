@@ -670,6 +670,7 @@ Rules:
 
 1. If `snapshot_version` is omitted, the server uses `current_snapshot_version`
 2. Export always freezes to one snapshot version at submission time
+3. Repeating the same cycle + snapshot request returns the existing immutable package once that freeze is ready
 
 Response:
 

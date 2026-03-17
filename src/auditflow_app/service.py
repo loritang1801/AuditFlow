@@ -616,10 +616,26 @@ class AuditFlowAppService:
         latest_export = dashboard.latest_export_package
         if latest_export is not None and latest_export.snapshot_version > command.snapshot_version:
             raise ValueError("SNAPSHOT_STALE")
+        existing_snapshot_packages = self.repository.list_export_packages(
+            cycle_id,
+            snapshot_version=command.snapshot_version,
+        )
+        existing_snapshot_package = existing_snapshot_packages[0] if existing_snapshot_packages else None
         if (
-            latest_export is not None
-            and latest_export.snapshot_version == command.snapshot_version
-            and latest_export.status in {"queued", "building"}
+            existing_snapshot_package is not None
+            and existing_snapshot_package.status == "ready"
+            and existing_snapshot_package.immutable_at is not None
+        ):
+            self._store_idempotent_response(
+                operation="auditflow.create_export_package",
+                idempotency_key=idempotency_key,
+                request_payload=request_payload,
+                response_payload=existing_snapshot_package.model_dump(mode="json"),
+            )
+            return existing_snapshot_package
+        if (
+            existing_snapshot_package is not None
+            and existing_snapshot_package.status in {"queued", "building"}
         ):
             raise ValueError("EXPORT_ALREADY_RUNNING")
         self._emit_product_event(

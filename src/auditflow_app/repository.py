@@ -455,6 +455,7 @@ class NarrativeRow(Base):
 
 class ExportPackageRow(Base):
     __tablename__ = "auditflow_export_package"
+    __table_args__ = (UniqueConstraint("cycle_id", "snapshot_version", name="uq_auditflow_export_cycle_snapshot"),)
 
     package_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     cycle_id: Mapped[str] = mapped_column(String(255), index=True)

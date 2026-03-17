@@ -90,7 +90,7 @@ Implemented:
 
 Missing or partial:
 
-1. Basic export-readiness and stale/running validation now exist, but there is still no strict snapshot freeze ledger.
+1. Snapshot freeze history plus cycle+snapshot export deduping now exist, but there is still no separate first-class freeze ledger model beyond `audit_package`.
 
 ### 7. Operations and Platform Integration
 
