@@ -25,10 +25,11 @@
 - `app.py` exposes a FastAPI factory over the shared workflow API
 - Implemented product APIs now include controls, control detail, evidence detail, imports, mapping review, gap decisions, narratives, and export submission
 - Import submission is now outbox-driven: import requests enqueue `auditflow.import.requested` jobs, and dispatching those jobs triggers the shared `auditflow_cycle_processing` workflow plus evidence/chunk/mapping materialization
+- Import acceptance now also emits `auditflow.import.accepted` product outbox events alongside the worker-dispatch import job event
 - `worker.py` now provides a dedicated import worker over shared `OutboxDispatcher`, filters unrelated outbox events, and supports connector-specific handlers for `upload`, `jira`, and `confluence`
 - Import acceptance now collapses duplicate upload and connector requests before enqueueing normalization jobs
 - Import processing now persists raw artifact text, normalized artifact text, and multi-chunk evidence rows before reviewer mapping
-- Upload imports now normalize CSV, JSON, and plain-text artifacts into structured evidence chunks with parser metadata
+- Upload imports now normalize CSV, JSON, Markdown, HTML, and plain-text artifacts into structured evidence chunks with parser metadata
 - Reviewer actions now append immutable `review_decision` audit rows for mapping and gap decisions
 - Cycle-level gap records can now be queried with status/severity filters for reviewer workbench backends
 - Review history can now be queried at the cycle level with optional mapping/gap filters for reviewer workbench backends

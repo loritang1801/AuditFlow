@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import html
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import StringIO
@@ -267,6 +269,21 @@ class AuditFlowAppService:
             return cached
         response = self.repository.create_upload_import(cycle_id, command)
         if response.evidence_source_ids:
+            self._emit_product_event(
+                event_name="auditflow.import.accepted",
+                workflow_run_id=response.workflow_run_id,
+                aggregate_type="audit_cycle",
+                aggregate_id=cycle_id,
+                node_name="import_accepted",
+                payload={
+                    "cycle_id": cycle_id,
+                    "evidence_source_id": response.evidence_source_ids[0],
+                    "source_type": "upload",
+                    "artifact_id": command.artifact_id,
+                    "organization_id": command.organization_id,
+                    "workspace_id": command.workspace_id,
+                },
+            )
             self._enqueue_import_job(
                 cycle_id=cycle_id,
                 evidence_source_id=response.evidence_source_ids[0],
@@ -317,6 +334,21 @@ class AuditFlowAppService:
                 else f"{response.workflow_run_id}-{index + 1}"
             )
             display_name = f"{command.provider.upper()} import {selector}"
+            self._emit_product_event(
+                event_name="auditflow.import.accepted",
+                workflow_run_id=workflow_run_id,
+                aggregate_type="audit_cycle",
+                aggregate_id=cycle_id,
+                node_name="import_accepted",
+                payload={
+                    "cycle_id": cycle_id,
+                    "evidence_source_id": evidence_source_id,
+                    "source_type": command.provider,
+                    "source_locator": selector if command.query is None else f"{command.provider}:query",
+                    "organization_id": command.organization_id,
+                    "workspace_id": command.workspace_id,
+                },
+            )
             self._enqueue_import_job(
                 cycle_id=cycle_id,
                 evidence_source_id=evidence_source_id,
@@ -546,6 +578,32 @@ class AuditFlowAppService:
         if self.runtime_stores is not None and hasattr(self.runtime_stores, "dispose"):
             self.runtime_stores.dispose()
 
+    def _emit_product_event(
+        self,
+        *,
+        event_name: str,
+        workflow_run_id: str,
+        aggregate_type: str,
+        aggregate_id: str,
+        node_name: str,
+        payload: dict[str, object],
+    ) -> None:
+        if self.runtime_stores is None or not hasattr(self.runtime_stores, "outbox_store"):
+            return
+        self.runtime_stores.outbox_store.append(
+            self._shared_platform.OutboxEvent(
+                event_id=f"product-event-{uuid4().hex[:10]}",
+                event_name=event_name,
+                workflow_run_id=workflow_run_id,
+                workflow_type="auditflow_import",
+                node_name=node_name,
+                aggregate_type=aggregate_type,
+                aggregate_id=aggregate_id,
+                payload=payload,
+                emitted_at=datetime.now(UTC),
+            )
+        )
+
     def _enqueue_import_job(
         self,
         *,
@@ -719,6 +777,16 @@ class AuditFlowAppService:
                 display_name=display_name,
                 raw_text=raw_text,
             )
+        elif artifact_format == "markdown":
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_markdown_artifact(
+                display_name=display_name,
+                raw_text=raw_text,
+            )
+        elif artifact_format == "html":
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_html_artifact(
+                display_name=display_name,
+                raw_text=raw_text,
+            )
         else:
             normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
                 source_type=source_type,
@@ -758,6 +826,14 @@ class AuditFlowAppService:
             return "json"
         if any(candidate.endswith(".csv") for candidate in locator_candidates) and "," in first_line:
             return "csv"
+        if any(candidate.endswith((".md", ".markdown")) for candidate in locator_candidates):
+            return "markdown"
+        if any(candidate.endswith((".html", ".htm")) for candidate in locator_candidates):
+            return "html"
+        if stripped.startswith(("#", "- ", "* ", "1. ")):
+            return "markdown"
+        if re.search(r"(?is)<(html|body|section|article|div|p|table|h1|h2)\b", stripped):
+            return "html"
         return "text"
 
     @staticmethod
@@ -826,6 +902,93 @@ class AuditFlowAppService:
         elif isinstance(parsed, list):
             metadata["top_level_count"] = len(parsed)
         return normalized_text, section_chunks, metadata
+
+    @staticmethod
+    def _parse_markdown_artifact(
+        *,
+        display_name: str,
+        raw_text: str,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        normalized_lines = raw_text.replace("\r\n", "\n").split("\n")
+        heading_count = 0
+        bullet_count = 0
+        sections: list[str] = []
+        current_heading = display_name
+        current_lines: list[str] = []
+
+        def flush_section() -> None:
+            nonlocal current_lines
+            content = "\n".join(line for line in current_lines if line).strip()
+            if content:
+                sections.append(f"{current_heading}\n{content}".strip())
+            current_lines = []
+
+        for raw_line in normalized_lines:
+            line = raw_line.strip()
+            if not line:
+                if current_lines and current_lines[-1] != "":
+                    current_lines.append("")
+                continue
+            heading_match = re.match(r"^#{1,6}\s+(.*)$", line)
+            if heading_match is not None:
+                flush_section()
+                heading_count += 1
+                current_heading = heading_match.group(1).strip() or display_name
+                continue
+            if re.match(r"^[-*+]\s+", line):
+                bullet_count += 1
+                current_lines.append(re.sub(r"^[-*+]\s+", "", line))
+                continue
+            if re.match(r"^\d+\.\s+", line):
+                bullet_count += 1
+                current_lines.append(re.sub(r"^\d+\.\s+", "", line))
+                continue
+            current_lines.append(line)
+
+        flush_section()
+        if not sections:
+            return AuditFlowAppService._parse_text_artifact(
+                source_type="upload",
+                display_name=display_name,
+                raw_text=raw_text,
+            )
+        normalized_text = "\n\n".join([f"Markdown import: {display_name}", *sections])
+        return normalized_text, sections, {
+            "source_format": "markdown",
+            "heading_count": heading_count,
+            "bullet_count": bullet_count,
+            "section_count": len(sections),
+        }
+
+    @staticmethod
+    def _parse_html_artifact(
+        *,
+        display_name: str,
+        raw_text: str,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        cleaned = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", " ", raw_text)
+        cleaned = re.sub(r"(?i)<br\s*/?>", "\n", cleaned)
+        cleaned = re.sub(r"(?i)</(p|div|section|article|li|tr|h[1-6]|ul|ol|table|thead|tbody|tfoot)>", "\n", cleaned)
+        cleaned = re.sub(r"(?i)<li\b[^>]*>", "- ", cleaned)
+        cleaned = re.sub(r"(?i)<(p|div|section|article|table|tr|h[1-6])\b[^>]*>", "\n", cleaned)
+        cleaned = re.sub(r"(?s)<[^>]+>", " ", cleaned)
+        cleaned = html.unescape(cleaned)
+        cleaned = "\n".join(
+            re.sub(r"\s+", " ", line).strip()
+            for line in cleaned.splitlines()
+        ).strip()
+        normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
+            source_type="upload",
+            display_name=display_name,
+            raw_text=cleaned or display_name,
+        )
+        parser_metadata.update(
+            {
+                "source_format": "html",
+                "heading_count": len(re.findall(r"(?i)<h[1-6]\b", raw_text)),
+            }
+        )
+        return normalized_text, chunk_texts, parser_metadata
 
     @staticmethod
     def _parse_text_artifact(

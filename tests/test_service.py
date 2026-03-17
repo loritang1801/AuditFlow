@@ -444,6 +444,29 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(first.evidence_source_ids, second.evidence_source_ids)
         self.assertEqual(len(matching), 1)
 
+    def test_upload_import_emits_accept_and_dispatch_outbox_events(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        accepted = service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-events-1",
+                display_name="Outbox Event Export",
+            ),
+        )
+
+        pending = service.runtime_stores.outbox_store.list_pending()
+        matching_events = [
+            item.event
+            for item in pending
+            if item.event.workflow_run_id == accepted.workflow_run_id
+        ]
+        event_names = [event.event_name for event in matching_events]
+
+        self.assertIn("auditflow.import.accepted", event_names)
+        self.assertIn("auditflow.import.requested", event_names)
+
     def test_import_processing_persists_artifact_backed_evidence_and_chunks(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
@@ -570,6 +593,79 @@ class AuditFlowServiceTests(unittest.TestCase):
 
         evidence = service.get_evidence(evidence_row.evidence_id)
         self.assertIn("review.owner: Security Engineering", evidence.summary)
+
+    def test_markdown_upload_import_preserves_section_structure(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-md-1",
+                display_name="Access Review Notes",
+                artifact_text=(
+                    "# Access Review\n\n"
+                    "- Reviewer: Security Engineering\n"
+                    "- Quarter: 2026-Q1\n\n"
+                    "## Findings\n\n"
+                    "1. Two stale contractor accounts were removed.\n"
+                    "2. Break-glass access remained limited.\n"
+                ),
+            )
+            | {"source_locator": "uploads/access-review.md"},
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-md-1-normalized")
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-md-1")
+            ).first()
+
+        self.assertIsNotNone(normalized_row)
+        self.assertEqual(normalized_row.metadata_payload["parser_kind"], "markdown")
+        self.assertEqual(normalized_row.metadata_payload["heading_count"], 2)
+        self.assertEqual(normalized_row.metadata_payload["bullet_count"], 4)
+        self.assertIn("Access Review", normalized_row.content_text)
+        self.assertIn("Findings", normalized_row.content_text)
+
+        evidence = service.get_evidence(evidence_row.evidence_id)
+        self.assertGreaterEqual(len(evidence.chunks), 2)
+
+    def test_html_upload_import_strips_markup_into_text_chunks(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-html-1",
+                display_name="Access Review Portal Export",
+                artifact_text=(
+                    "<html><body><h1>Access Review</h1><p>Reviewer: Security Engineering</p>"
+                    "<ul><li>Production admins approved</li><li>Break-glass reviewed</li></ul>"
+                    "<p>All actions completed.</p></body></html>"
+                ),
+            )
+            | {"source_locator": "uploads/access-review.html"},
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-html-1-normalized")
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-html-1")
+            ).first()
+
+        self.assertIsNotNone(normalized_row)
+        self.assertEqual(normalized_row.metadata_payload["parser_kind"], "html")
+        self.assertEqual(normalized_row.metadata_payload["heading_count"], 1)
+        self.assertIn("Access Review", normalized_row.content_text)
+        self.assertIn("Production admins approved", normalized_row.content_text)
+        self.assertNotIn("<h1>", normalized_row.content_text)
+
+        evidence = service.get_evidence(evidence_row.evidence_id)
+        self.assertGreaterEqual(len(evidence.chunks), 1)
 
     def test_mapping_and_gap_reviews_append_review_decision_audit_rows(self) -> None:
         service = build_app_service()

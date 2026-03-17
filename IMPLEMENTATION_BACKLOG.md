@@ -37,10 +37,11 @@ Status: partially implemented
 Implemented:
 
 1. Upload/Jira/Confluence imports enqueue outbox jobs.
-2. Import worker dispatches connector-specific handlers.
-3. Duplicate upload and connector sources now collapse at import acceptance time via source fingerprints and stable source keys.
-4. Import processing now persists raw/normalized artifact text blobs and multi-chunk evidence rows for downstream review.
-5. Upload imports now apply format-aware CSV/JSON/text normalization before chunk materialization.
+2. Import acceptance now emits product-scoped `auditflow.import.accepted` outbox events.
+3. Import worker dispatches connector-specific handlers.
+4. Duplicate upload and connector sources now collapse at import acceptance time via source fingerprints and stable source keys.
+5. Import processing now persists raw/normalized artifact text blobs and multi-chunk evidence rows for downstream review.
+6. Upload imports now apply format-aware CSV/JSON/Markdown/HTML/text normalization before chunk materialization.
 
 Missing or partial:
 
