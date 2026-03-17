@@ -121,19 +121,20 @@ class AuditFlowAppService:
         if isinstance(command, dict):
             command = UploadImportCommand.model_validate(command)
         response = self.repository.create_upload_import(cycle_id, command)
-        self._enqueue_import_job(
-            cycle_id=cycle_id,
-            evidence_source_id=response.evidence_source_ids[0],
-            workflow_run_id=response.workflow_run_id,
-            source_type="upload",
-            artifact_id=command.artifact_id,
-            display_name=command.display_name,
-            evidence_type=command.evidence_type_hint or "document",
-            source_locator=command.source_locator,
-            captured_at=command.captured_at,
-            organization_id=command.organization_id,
-            workspace_id=command.workspace_id,
-        )
+        if response.evidence_source_ids:
+            self._enqueue_import_job(
+                cycle_id=cycle_id,
+                evidence_source_id=response.evidence_source_ids[0],
+                workflow_run_id=response.workflow_run_id,
+                source_type="upload",
+                artifact_id=command.artifact_id,
+                display_name=command.display_name,
+                evidence_type=command.evidence_type_hint or "document",
+                source_locator=command.source_locator,
+                captured_at=command.captured_at,
+                organization_id=command.organization_id,
+                workspace_id=command.workspace_id,
+            )
         return response
 
     def create_external_import(

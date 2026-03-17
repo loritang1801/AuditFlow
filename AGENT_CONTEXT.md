@@ -1,6 +1,6 @@
 # AuditFlow Agent Context
 
-- Date: 2026-03-16
+- Date: 2026-03-17
 - Product: SOC 2 evidence management and audit package generation
 
 ## Completed Design Layers
@@ -19,12 +19,14 @@
 - `service.py` exposes domain-facing AuditFlow commands over the shared workflow API
 - `routes.py` exposes product-specific FastAPI route definitions
 - `repository.py` now uses a SQLAlchemy-backed workspace/cycle/import/review/gap/export repository
+- Workspace and cycle creation now seed a reusable SOC2 control catalog instead of relying on one implicit demo control row
 - `bootstrap.py` defaults to the SQLAlchemy repository over the shared runtime engine/session
 - `sample_payloads.py` includes demo payload and request helpers
 - `app.py` exposes a FastAPI factory over the shared workflow API
 - Implemented product APIs now include controls, control detail, evidence detail, imports, mapping review, gap decisions, narratives, and export submission
 - Import submission is now outbox-driven: import requests enqueue `auditflow.import.requested` jobs, and dispatching those jobs triggers the shared `auditflow_cycle_processing` workflow plus evidence/chunk/mapping materialization
 - `worker.py` now provides a dedicated import worker over shared `OutboxDispatcher`, filters unrelated outbox events, and supports connector-specific handlers for `upload`, `jira`, and `confluence`
+- Import acceptance now collapses duplicate upload and connector requests before enqueueing normalization jobs
 - `scripts/run_import_worker.py` now supports single-dispatch and polling modes with optional seeded upload jobs
 - Shared runtime foundation lives in `D:\project\SharedAgentCore`
 - Future AuditFlow code should consume vendored shared assets instead of re-implementing registries and runtime helpers

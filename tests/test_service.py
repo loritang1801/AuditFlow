@@ -23,6 +23,8 @@ from auditflow_app.sample_payloads import (
     workspace_create_command,
 )
 
+EXPECTED_SOC2_CONTROL_CODES = ["CC6.1", "CC6.2", "CC7.2", "CC8.1"]
+
 
 class AuditFlowServiceTests(unittest.TestCase):
     def test_create_workspace_and_cycle(self) -> None:
@@ -45,7 +47,10 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(dashboard.cycle.cycle_id, cycle.cycle_id)
         self.assertEqual(dashboard.cycle.coverage_status, "not_started")
         self.assertFalse(dashboard.export_ready)
-        self.assertGreaterEqual(len(dashboard.controls), 1)
+        self.assertEqual(
+            [control.control_code for control in dashboard.controls],
+            EXPECTED_SOC2_CONTROL_CODES,
+        )
 
     def test_query_workspace_cycle_and_review_queue(self) -> None:
         service = build_app_service()
@@ -63,9 +68,31 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(len(cycles), 1)
         self.assertEqual(dashboard.cycle.cycle_id, "cycle-1")
         self.assertEqual(review_queue.total_count, 1)
-        self.assertEqual(len(controls), 1)
+        self.assertEqual([control.control_code for control in controls], EXPECTED_SOC2_CONTROL_CODES)
         self.assertEqual(control_detail.control_state.control_code, "CC6.1")
         self.assertEqual(evidence.evidence_id, "evidence-1")
+
+    def test_new_cycles_inherit_control_catalog_template_set(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        workspace = service.create_workspace(workspace_create_command(workspace_name="Template Workspace"))
+        cycle_one = service.create_cycle(
+            cycle_create_command(workspace_id=workspace.workspace_id, cycle_name="SOC2 2027")
+        )
+        cycle_two = service.create_cycle(
+            cycle_create_command(workspace_id=workspace.workspace_id, cycle_name="SOC2 2028")
+        )
+        controls_one = service.list_controls(cycle_one.cycle_id)
+        controls_two = service.list_controls(cycle_two.cycle_id)
+
+        self.assertEqual([control.control_code for control in controls_one], EXPECTED_SOC2_CONTROL_CODES)
+        self.assertEqual([control.control_code for control in controls_two], EXPECTED_SOC2_CONTROL_CODES)
+        self.assertTrue(
+            {control.control_state_id for control in controls_one}.isdisjoint(
+                {control.control_state_id for control in controls_two}
+            )
+        )
 
     def test_imports_and_gap_decision(self) -> None:
         service = build_app_service()
@@ -93,6 +120,33 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertTrue(all(item.ingest_status == "normalized" for item in imports_after.items))
         self.assertEqual(len(control_detail.open_gaps), 0)
         self.assertGreaterEqual(review_queue.total_count, 4)
+
+    def test_duplicate_upload_imports_collapse_before_dispatch(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        first = service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-duplicate-1",
+                display_name="Duplicate Access Review Export",
+            ),
+        )
+        duplicate = service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-duplicate-1",
+                display_name="Duplicate Access Review Export",
+            ),
+        )
+        imports = service.list_imports("cycle-1")
+        dispatch = service.dispatch_import_jobs()
+
+        self.assertEqual(first.accepted_count, 1)
+        self.assertEqual(duplicate.accepted_count, 0)
+        self.assertEqual(duplicate.evidence_source_ids, [])
+        self.assertEqual(imports.total_count, 2)
+        self.assertEqual(dispatch.dispatched_count, 1)
 
     def test_process_cycle_and_load_state(self) -> None:
         service = build_app_service()

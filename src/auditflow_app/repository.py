@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, select
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -35,9 +36,53 @@ from .api_models import (
 )
 
 
-DEFAULT_CYCLE_CONTROL_TEMPLATES = (
-    {"control_code": "CC6.1"},
-)
+CONTROL_CATALOG_SEEDS = {
+    "SOC2": (
+        {
+            "control_code": "CC6.1",
+            "domain_name": "access_control",
+            "title": "Access permissions are scoped and reviewed.",
+            "description": "Provisioning and periodic access reviews should demonstrate who can reach in-scope systems.",
+            "guidance_markdown": "Prefer review exports, approval tickets, and joiner/mover/leaver evidence.",
+            "common_evidence_payload": [{"kind": "access_review_report"}, {"kind": "ticket"}],
+            "sort_order": 10,
+        },
+        {
+            "control_code": "CC6.2",
+            "domain_name": "identity_lifecycle",
+            "title": "Identity lifecycle changes are approved and recorded.",
+            "description": "Joiner, mover, and leaver changes should be approved and leave an auditable trail.",
+            "guidance_markdown": "Look for termination tickets, access removal logs, and manager approvals.",
+            "common_evidence_payload": [{"kind": "ticket"}, {"kind": "change_log"}],
+            "sort_order": 20,
+        },
+        {
+            "control_code": "CC7.2",
+            "domain_name": "monitoring",
+            "title": "Security-relevant events are monitored and triaged.",
+            "description": "Alerting and triage workflows should show detection, investigation, and response coverage.",
+            "guidance_markdown": "Useful evidence includes alerts, incident tickets, and review notes.",
+            "common_evidence_payload": [{"kind": "alert"}, {"kind": "incident_ticket"}],
+            "sort_order": 30,
+        },
+        {
+            "control_code": "CC8.1",
+            "domain_name": "change_management",
+            "title": "Changes are reviewed before production release.",
+            "description": "Production changes should retain approval, deployment, and rollback evidence.",
+            "guidance_markdown": "Capture deployment approvals, release notes, and rollback records.",
+            "common_evidence_payload": [{"kind": "deployment_record"}, {"kind": "approval"}],
+            "sort_order": 40,
+        },
+    ),
+}
+
+SEEDED_CONTROL_STATE_IDS = {
+    "CC6.1": "control-state-1",
+    "CC6.2": "control-state-2",
+    "CC7.2": "control-state-3",
+    "CC8.1": "control-state-4",
+}
 
 
 class AuditFlowRepository(Protocol):
@@ -137,6 +182,30 @@ class AuditCycleRow(Base):
     review_queue_count: Mapped[int] = mapped_column(Integer, default=0)
     open_gap_count: Mapped[int] = mapped_column(Integer, default=0)
     latest_workflow_run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class ControlCatalogRow(Base):
+    __tablename__ = "auditflow_control_catalog"
+    __table_args__ = (
+        UniqueConstraint(
+            "framework_name",
+            "control_code",
+            name="ux_auditflow_control_catalog_framework_code",
+        ),
+    )
+
+    control_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    framework_name: Mapped[str] = mapped_column(String(50), index=True)
+    control_code: Mapped[str] = mapped_column(String(100))
+    domain_name: Mapped[str] = mapped_column(String(100))
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text)
+    guidance_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    common_evidence_payload: Mapped[list[dict]] = mapped_column(JSON)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 
 
 class ControlCoverageRow(Base):
@@ -263,6 +332,7 @@ class SqlAlchemyAuditFlowRepository:
 
     def seed_if_empty(self) -> None:
         with self.session_factory.begin() as session:
+            self._seed_control_catalog(session)
             existing = session.scalar(select(AuditWorkspaceRow.workspace_id).limit(1))
             if existing is not None:
                 return
@@ -289,15 +359,18 @@ class SqlAlchemyAuditFlowRepository:
                     latest_workflow_run_id=None,
                 )
             )
-            session.add(
-                ControlCoverageRow(
-                    control_state_id="control-state-1",
-                    cycle_id="cycle-1",
-                    control_code="CC6.1",
-                    coverage_status="pending_review",
-                    mapped_evidence_count=1,
-                    open_gap_count=1,
-                )
+            self._seed_cycle_control_states(
+                session,
+                cycle_id="cycle-1",
+                framework_name="SOC2",
+                fixed_state_ids=SEEDED_CONTROL_STATE_IDS,
+                state_overrides={
+                    "CC6.1": {
+                        "coverage_status": "pending_review",
+                        "mapped_evidence_count": 1,
+                        "open_gap_count": 1,
+                    }
+                },
             )
             session.add(
                 EvidenceSourceRow(
@@ -536,18 +609,11 @@ class SqlAlchemyAuditFlowRepository:
             session.add(cycle_row)
             session.flush()
 
-            for control_template in DEFAULT_CYCLE_CONTROL_TEMPLATES:
-                session.add(
-                    ControlCoverageRow(
-                        control_state_id=f"control-state-{uuid4().hex[:10]}",
-                        cycle_id=cycle_id,
-                        control_code=str(control_template["control_code"]),
-                        coverage_status="not_started",
-                        mapped_evidence_count=0,
-                        open_gap_count=0,
-                    )
-                )
-
+            self._seed_cycle_control_states(
+                session,
+                cycle_id=cycle_id,
+                framework_name=command.framework_name,
+            )
             session.flush()
             self._refresh_cycle_counts(session, cycle_id)
             return self._to_cycle(cycle_row)
@@ -696,10 +762,34 @@ class SqlAlchemyAuditFlowRepository:
         created_at = self._utcnow_naive()
         evidence_source_id = f"source-{uuid4().hex[:10]}"
         workflow_run_id = command.workflow_run_id or f"auditflow-import-upload-{uuid4().hex[:10]}"
+        captured_at = self._normalize_timestamp(command.captured_at)
+        fingerprint = self._build_source_fingerprint(
+            cycle_id,
+            "upload",
+            command.artifact_id,
+            command.source_locator,
+            captured_at.isoformat() if captured_at is not None else None,
+        )
         with self.session_factory.begin() as session:
             cycle_row = session.get(AuditCycleRow, cycle_id)
             if cycle_row is None:
                 raise KeyError(cycle_id)
+            duplicate_row = self._find_duplicate_source(
+                session,
+                cycle_id=cycle_id,
+                source_type="upload",
+                fingerprint=fingerprint,
+                artifact_id=command.artifact_id,
+            )
+            if duplicate_row is not None:
+                duplicate_row.updated_at = created_at
+                return ImportAcceptedResponse(
+                    workflow_run_id=workflow_run_id,
+                    accepted_count=0,
+                    evidence_source_ids=[],
+                    artifact_id=duplicate_row.artifact_id or command.artifact_id,
+                    ingest_status=duplicate_row.ingest_status,
+                )
             session.add(
                 EvidenceSourceRow(
                     evidence_source_id=evidence_source_id,
@@ -712,9 +802,12 @@ class SqlAlchemyAuditFlowRepository:
                     display_name=command.display_name,
                     ingest_status="pending",
                     latest_workflow_run_id=None,
-                    captured_at=self._normalize_timestamp(command.captured_at),
+                    captured_at=captured_at,
                     last_synced_at=None,
-                    metadata_payload={"evidence_type_hint": command.evidence_type_hint},
+                    metadata_payload={
+                        "evidence_type_hint": command.evidence_type_hint,
+                        "fingerprint": fingerprint,
+                    },
                     created_at=created_at,
                     updated_at=created_at,
                 )
@@ -732,11 +825,36 @@ class SqlAlchemyAuditFlowRepository:
         workflow_run_id = command.workflow_run_id or f"auditflow-import-external-{uuid4().hex[:10]}"
         selectors = command.upstream_ids or [command.query or ""]
         evidence_source_ids: list[str] = []
+        duplicate_row: EvidenceSourceRow | None = None
         with self.session_factory.begin() as session:
             cycle_row = session.get(AuditCycleRow, cycle_id)
             if cycle_row is None:
                 raise KeyError(cycle_id)
             for selector in selectors:
+                upstream_object_id = selector if command.upstream_ids else None
+                source_locator = selector if command.query is None else f"{command.provider}:query"
+                fingerprint = self._build_source_fingerprint(
+                    cycle_id,
+                    command.provider,
+                    command.connection_id,
+                    upstream_object_id,
+                    source_locator,
+                    command.query,
+                )
+                existing_row = self._find_duplicate_source(
+                    session,
+                    cycle_id=cycle_id,
+                    source_type=command.provider,
+                    fingerprint=fingerprint,
+                    connection_id=command.connection_id,
+                    upstream_object_id=upstream_object_id,
+                    source_locator=source_locator,
+                )
+                if existing_row is not None:
+                    existing_row.updated_at = created_at
+                    if duplicate_row is None:
+                        duplicate_row = existing_row
+                    continue
                 evidence_source_id = f"source-{uuid4().hex[:10]}"
                 evidence_source_ids.append(evidence_source_id)
                 session.add(
@@ -746,14 +864,14 @@ class SqlAlchemyAuditFlowRepository:
                         source_type=command.provider,
                         connection_id=command.connection_id,
                         artifact_id=None,
-                        upstream_object_id=(selector if command.upstream_ids else None),
-                        source_locator=(selector if command.query is None else f"{command.provider}:query"),
+                        upstream_object_id=upstream_object_id,
+                        source_locator=source_locator,
                         display_name=f"{command.provider.upper()} import {selector}",
                         ingest_status="pending",
                         latest_workflow_run_id=None,
                         captured_at=None,
                         last_synced_at=None,
-                        metadata_payload={"query": command.query},
+                        metadata_payload={"query": command.query, "fingerprint": fingerprint},
                         created_at=created_at,
                         updated_at=created_at,
                     )
@@ -763,7 +881,7 @@ class SqlAlchemyAuditFlowRepository:
             accepted_count=len(evidence_source_ids),
             evidence_source_ids=evidence_source_ids,
             artifact_id=None,
-            ingest_status="pending",
+            ingest_status=("pending" if evidence_source_ids else duplicate_row.ingest_status if duplicate_row else "pending"),
         )
 
     def complete_import_processing(
@@ -1113,3 +1231,120 @@ class SqlAlchemyAuditFlowRepository:
             cycle_row.coverage_status = "pending_review"
         else:
             cycle_row.coverage_status = "needs_attention"
+
+    @classmethod
+    def _seed_control_catalog(cls, session: Session) -> None:
+        now = cls._utcnow_naive()
+        for framework_name, templates in CONTROL_CATALOG_SEEDS.items():
+            existing_codes = set(
+                session.scalars(
+                    select(ControlCatalogRow.control_code).where(
+                        ControlCatalogRow.framework_name == framework_name
+                    )
+                ).all()
+            )
+            for template in templates:
+                control_code = str(template["control_code"])
+                if control_code in existing_codes:
+                    continue
+                session.add(
+                    ControlCatalogRow(
+                        control_id=f"control-catalog-{framework_name.lower()}-{control_code.lower()}",
+                        framework_name=framework_name,
+                        control_code=control_code,
+                        domain_name=str(template["domain_name"]),
+                        title=str(template["title"]),
+                        description=str(template["description"]),
+                        guidance_markdown=str(template["guidance_markdown"]),
+                        common_evidence_payload=list(template["common_evidence_payload"]),
+                        is_active=True,
+                        sort_order=int(template["sort_order"]),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+
+    @staticmethod
+    def _list_control_catalog(session: Session, framework_name: str) -> list[ControlCatalogRow]:
+        return session.scalars(
+            select(ControlCatalogRow)
+            .where(ControlCatalogRow.framework_name == framework_name)
+            .where(ControlCatalogRow.is_active.is_(True))
+            .order_by(ControlCatalogRow.sort_order.asc(), ControlCatalogRow.control_code.asc())
+        ).all()
+
+    @classmethod
+    def _seed_cycle_control_states(
+        cls,
+        session: Session,
+        *,
+        cycle_id: str,
+        framework_name: str,
+        fixed_state_ids: dict[str, str] | None = None,
+        state_overrides: dict[str, dict[str, object]] | None = None,
+    ) -> None:
+        control_templates = cls._list_control_catalog(session, framework_name)
+        if not control_templates:
+            raise ValueError("CONTROL_TEMPLATES_NOT_FOUND")
+        fixed_state_ids = fixed_state_ids or {}
+        state_overrides = state_overrides or {}
+        for template in control_templates:
+            overrides = state_overrides.get(template.control_code, {})
+            session.add(
+                ControlCoverageRow(
+                    control_state_id=fixed_state_ids.get(
+                        template.control_code,
+                        f"control-state-{uuid4().hex[:10]}",
+                    ),
+                    cycle_id=cycle_id,
+                    control_code=template.control_code,
+                    coverage_status=str(overrides.get("coverage_status", "not_started")),
+                    mapped_evidence_count=int(overrides.get("mapped_evidence_count", 0)),
+                    open_gap_count=int(overrides.get("open_gap_count", 0)),
+                )
+            )
+
+    @staticmethod
+    def _build_source_fingerprint(*parts: object | None) -> str:
+        normalized = "||".join("" if part is None else str(part) for part in parts)
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _find_duplicate_source(
+        session: Session,
+        *,
+        cycle_id: str,
+        source_type: str,
+        fingerprint: str,
+        artifact_id: str | None = None,
+        connection_id: str | None = None,
+        upstream_object_id: str | None = None,
+        source_locator: str | None = None,
+    ) -> EvidenceSourceRow | None:
+        candidate_rows = session.scalars(
+            select(EvidenceSourceRow)
+            .where(EvidenceSourceRow.cycle_id == cycle_id)
+            .where(EvidenceSourceRow.source_type == source_type)
+        ).all()
+        for row in candidate_rows:
+            metadata_payload = row.metadata_payload if isinstance(row.metadata_payload, dict) else {}
+            if metadata_payload.get("fingerprint") == fingerprint:
+                return row
+            if artifact_id is not None and row.artifact_id == artifact_id:
+                return row
+            if (
+                connection_id is not None
+                and row.connection_id == connection_id
+                and upstream_object_id is not None
+                and row.upstream_object_id == upstream_object_id
+            ):
+                return row
+            if (
+                connection_id is not None
+                and row.connection_id == connection_id
+                and upstream_object_id is None
+                and source_locator is not None
+                and row.source_locator == source_locator
+            ):
+                return row
+        return None

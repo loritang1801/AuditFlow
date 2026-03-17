@@ -4,7 +4,7 @@
 
 ## Current State
 
-This folder currently contains decision-complete product and engineering specifications plus an initialized repo skeleton for future implementation.
+This folder now contains the product specs plus a working product-layer implementation under `src/auditflow_app/`.
 
 Available documents:
 
@@ -37,7 +37,7 @@ Product-specific thin adapters now live under `src/auditflow_app/`.
 - Build a domain-facing application service from `auditflow_app.bootstrap.build_app_service`
 - Use `auditflow_app.app:create_app` as a FastAPI factory when `fastapi` is installed
 - Default product repository is now SQLAlchemy-backed and shares the same runtime engine/session as the workflow layer
-- Current product API covers workspace lookup, cycle list/dashboard, control detail, evidence detail, mapping review, narratives, workflow-backed cycle processing, and export package projection
+- Current product API covers workspace/cycle creation, control detail, imports, review/gap decisions, narratives, workflow-backed cycle processing, and export package projection
 - Run the local workflow smoke script:
 
 ```powershell

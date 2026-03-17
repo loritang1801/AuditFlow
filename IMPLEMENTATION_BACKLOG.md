@@ -1,6 +1,6 @@
 # AuditFlow Implementation Backlog
 
-Last updated: 2026-03-16
+Last updated: 2026-03-17
 
 This file tracks the gap between the current AuditFlow demo implementation and
 the product/design contracts in `PRD.md`, `ARCHITECTURE.md`, `DATABASE.md`,
@@ -10,14 +10,14 @@ the product/design contracts in `PRD.md`, `ARCHITECTURE.md`, `DATABASE.md`,
 
 ### 1. Domain Bootstrapping
 
-Status: in progress
+Status: completed
 
-Missing or partial:
+Implemented:
 
-1. Workspace creation is not implemented.
-2. Cycle creation is not implemented.
-3. Control catalog is still implicit demo data instead of a reusable domain layer.
-4. New cycles do not yet inherit a formal control template set.
+1. Workspace creation.
+2. Cycle creation.
+3. SQLAlchemy-backed reusable control catalog seeding.
+4. New cycles inherit the active control template set for their framework.
 
 ### 2. API Contract Convergence
 
@@ -38,13 +38,13 @@ Implemented:
 
 1. Upload/Jira/Confluence imports enqueue outbox jobs.
 2. Import worker dispatches connector-specific handlers.
+3. Duplicate upload and connector sources now collapse at import acceptance time via source fingerprints and stable source keys.
 
 Missing or partial:
 
 1. No real artifact-backed parsing pipeline yet.
 2. No OCR/chunking/indexing persistence path yet.
 3. External connectors use synthetic payload normalization rather than live pulls.
-4. Duplicate detection and fingerprinting are not implemented.
 
 ### 4. Reviewer Workflow and Audit Trail
 
@@ -112,4 +112,4 @@ Missing or partial:
 
 ## Active Step
 
-Step 1 is the current implementation target.
+Step 2 is the current implementation target.
