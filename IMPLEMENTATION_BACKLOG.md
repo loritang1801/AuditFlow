@@ -55,12 +55,12 @@ Implemented:
 1. Mapping review decisions.
 2. Gap decisions.
 3. Basic optimistic concurrency checks.
+4. Immutable `review_decision` audit rows appended for mapping and gap decisions.
 
 Missing or partial:
 
-1. No dedicated `review_decision` domain record.
-2. No richer reviewer conflict resolution or terminal-state policy coverage.
-3. Review queue ordering is still simplified.
+1. No richer reviewer conflict resolution or terminal-state policy coverage.
+2. Review queue ordering is still simplified.
 
 ### 5. Retrieval, Memory, and Prompt Grounding
 

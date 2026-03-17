@@ -11,6 +11,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from auditflow_app.bootstrap import build_app_service
+from auditflow_app.repository import ReviewDecisionRow
 from auditflow_app.sample_payloads import (
     cycle_create_command,
     cycle_processing_command,
@@ -147,6 +148,28 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(duplicate.evidence_source_ids, [])
         self.assertEqual(imports.total_count, 2)
         self.assertEqual(dispatch.dispatched_count, 1)
+
+    def test_mapping_and_gap_reviews_append_review_decision_audit_rows(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command(comment="Accepting mapped evidence."))
+        service.decide_gap("gap-1", gap_decision_command(comment="Gap is resolved."))
+
+        with service.repository.session_factory() as session:
+            decision_rows = session.query(ReviewDecisionRow).order_by(ReviewDecisionRow.created_at.asc()).all()
+
+        self.assertEqual(len(decision_rows), 2)
+        self.assertEqual(decision_rows[0].mapping_id, "mapping-1")
+        self.assertIsNone(decision_rows[0].gap_id)
+        self.assertEqual(decision_rows[0].decision, "accept")
+        self.assertEqual(decision_rows[0].from_status, "proposed")
+        self.assertEqual(decision_rows[0].to_status, "accepted")
+        self.assertEqual(decision_rows[1].gap_id, "gap-1")
+        self.assertIsNone(decision_rows[1].mapping_id)
+        self.assertEqual(decision_rows[1].decision, "resolve_gap")
+        self.assertEqual(decision_rows[1].from_status, "acknowledged")
+        self.assertEqual(decision_rows[1].to_status, "resolved")
 
     def test_process_cycle_and_load_state(self) -> None:
         service = build_app_service()

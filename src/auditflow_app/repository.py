@@ -84,6 +84,8 @@ SEEDED_CONTROL_STATE_IDS = {
     "CC8.1": "control-state-4",
 }
 
+DEFAULT_REVIEWER_ID = "reviewer-demo"
+
 
 class AuditFlowRepository(Protocol):
     def create_workspace(self, command: CreateWorkspaceCommand) -> AuditWorkspaceSummary: ...
@@ -266,6 +268,22 @@ class GapRow(Base):
     recommended_action: Mapped[str] = mapped_column(Text)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+
+
+class ReviewDecisionRow(Base):
+    __tablename__ = "auditflow_review_decision"
+
+    review_decision_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    cycle_id: Mapped[str] = mapped_column(String(255), index=True)
+    mapping_id: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    gap_id: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    decision: Mapped[str] = mapped_column(String(50))
+    from_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    reviewer_id: Mapped[str] = mapped_column(String(255))
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feedback_tags: Mapped[list[str]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 
 
 class EvidenceRow(Base):
@@ -983,6 +1001,7 @@ class SqlAlchemyAuditFlowRepository:
                 raise ValueError("CONFLICT_STALE_RESOURCE")
             if mapping_row.reviewer_locked and mapping_row.mapping_status in {"accepted", "rejected"}:
                 raise ValueError("MAPPING_ALREADY_TERMINAL")
+            previous_status = mapping_row.mapping_status
             original_control_id = mapping_row.control_state_id
             if command.decision == "reassign":
                 if command.target_control_id is None:
@@ -999,6 +1018,16 @@ class SqlAlchemyAuditFlowRepository:
                 mapping_row.mapping_status = "rejected"
             mapping_row.reviewer_locked = True
             mapping_row.updated_at = self._utcnow_naive()
+            self._append_review_decision(
+                session,
+                cycle_id=mapping_row.cycle_id,
+                mapping_id=mapping_row.mapping_id,
+                gap_id=None,
+                decision=command.decision,
+                from_status=previous_status,
+                to_status=mapping_row.mapping_status,
+                comment=command.comment,
+            )
 
             for control_id in {original_control_id, mapping_row.control_state_id}:
                 self._refresh_control_state(session, control_id)
@@ -1024,6 +1053,7 @@ class SqlAlchemyAuditFlowRepository:
                 command.expected_updated_at,
             ):
                 raise ValueError("CONFLICT_STALE_RESOURCE")
+            previous_status = gap_row.status
             if command.decision == "resolve_gap":
                 if gap_row.status == "resolved":
                     raise ValueError("GAP_STATUS_CONFLICT")
@@ -1043,6 +1073,16 @@ class SqlAlchemyAuditFlowRepository:
             control_row = session.get(ControlCoverageRow, gap_row.control_state_id)
             if control_row is None:
                 raise KeyError(gap_row.control_state_id)
+            self._append_review_decision(
+                session,
+                cycle_id=control_row.cycle_id,
+                mapping_id=None,
+                gap_id=gap_row.gap_id,
+                decision=command.decision,
+                from_status=previous_status,
+                to_status=gap_row.status,
+                comment=command.comment,
+            )
             self._refresh_control_state(session, control_row.control_state_id)
             self._refresh_cycle_counts(session, control_row.cycle_id)
             return self._to_gap(gap_row)
@@ -1348,3 +1388,39 @@ class SqlAlchemyAuditFlowRepository:
             ):
                 return row
         return None
+
+    @classmethod
+    def _append_review_decision(
+        cls,
+        session: Session,
+        *,
+        cycle_id: str,
+        mapping_id: str | None,
+        gap_id: str | None,
+        decision: str,
+        from_status: str | None,
+        to_status: str | None,
+        comment: str | None,
+    ) -> None:
+        session.add(
+            ReviewDecisionRow(
+                review_decision_id=f"review-decision-{uuid4().hex[:10]}",
+                cycle_id=cycle_id,
+                mapping_id=mapping_id,
+                gap_id=gap_id,
+                decision=decision,
+                from_status=from_status,
+                to_status=to_status,
+                reviewer_id=DEFAULT_REVIEWER_ID,
+                comment=comment or None,
+                feedback_tags=cls._decision_feedback_tags(decision, to_status),
+                created_at=cls._utcnow_naive(),
+            )
+        )
+
+    @staticmethod
+    def _decision_feedback_tags(decision: str, to_status: str | None) -> list[str]:
+        tags = [f"decision:{decision}"]
+        if to_status:
+            tags.append(f"status:{to_status}")
+        return tags

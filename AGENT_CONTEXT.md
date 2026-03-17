@@ -27,6 +27,7 @@
 - Import submission is now outbox-driven: import requests enqueue `auditflow.import.requested` jobs, and dispatching those jobs triggers the shared `auditflow_cycle_processing` workflow plus evidence/chunk/mapping materialization
 - `worker.py` now provides a dedicated import worker over shared `OutboxDispatcher`, filters unrelated outbox events, and supports connector-specific handlers for `upload`, `jira`, and `confluence`
 - Import acceptance now collapses duplicate upload and connector requests before enqueueing normalization jobs
+- Reviewer actions now append immutable `review_decision` audit rows for mapping and gap decisions
 - `scripts/run_import_worker.py` now supports single-dispatch and polling modes with optional seeded upload jobs
 - Shared runtime foundation lives in `D:\project\SharedAgentCore`
 - Future AuditFlow code should consume vendored shared assets instead of re-implementing registries and runtime helpers
