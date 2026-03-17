@@ -630,7 +630,24 @@ Response:
 }
 ```
 
-### 4.16 `POST /api/v1/auditflow/cycles/:cycleId/exports`
+### 4.16 `GET /api/v1/auditflow/cycles/:cycleId/exports`
+
+Purpose: list immutable export/freeze records for one cycle.
+
+Auth: `viewer`
+
+Query params:
+
+- `snapshot_version`
+- `status`
+- `cursor`
+- `limit`
+
+Response:
+
+- `200 OK` with paginated `AuditPackageSummary[]`
+
+### 4.17 `POST /api/v1/auditflow/cycles/:cycleId/exports`
 
 Purpose: create an export package for a fixed snapshot.
 
@@ -677,7 +694,7 @@ Errors:
 - `SNAPSHOT_STALE`
 - `CYCLE_NOT_READY_FOR_EXPORT`
 
-### 4.17 `GET /api/v1/auditflow/exports/:packageId`
+### 4.18 `GET /api/v1/auditflow/exports/:packageId`
 
 Purpose: fetch export package status and artifact ref.
 

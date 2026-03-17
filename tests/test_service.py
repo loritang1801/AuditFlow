@@ -846,6 +846,28 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(package.cycle_id, "cycle-1")
         self.assertEqual(package.snapshot_version, 3)
 
+    def test_list_export_packages_returns_cycle_freeze_history(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command())
+        service.decide_gap("gap-1", gap_decision_command())
+        first = service.create_export_package(
+            "cycle-1",
+            export_create_command(workflow_run_id="auditflow-export-ledger-1"),
+        )
+        second = service.create_export_package(
+            "cycle-1",
+            export_create_command(workflow_run_id="auditflow-export-ledger-2"),
+        )
+
+        packages = service.list_export_packages("cycle-1")
+        ready_packages = service.list_export_packages("cycle-1", status="ready")
+
+        self.assertEqual([item.package_id for item in packages[:2]], [second.package_id, first.package_id])
+        self.assertEqual(len(ready_packages), 2)
+        self.assertTrue(all(item.snapshot_version == first.snapshot_version for item in ready_packages))
+
     def test_create_export_package_rejects_cycle_not_ready(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)

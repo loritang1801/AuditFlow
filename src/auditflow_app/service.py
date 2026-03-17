@@ -480,6 +480,19 @@ class AuditFlowAppService:
             narrative_type=narrative_type,
         )
 
+    def list_export_packages(
+        self,
+        cycle_id: str,
+        *,
+        snapshot_version: int | None = None,
+        status: str | None = None,
+    ) -> list[ExportPackageSummary]:
+        return self.repository.list_export_packages(
+            cycle_id,
+            snapshot_version=snapshot_version,
+            status=status,
+        )
+
     def get_export_package(self, package_id: str) -> ExportPackageSummary:
         return self.repository.get_export_package(package_id)
 

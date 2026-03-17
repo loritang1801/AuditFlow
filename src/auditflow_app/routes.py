@@ -696,6 +696,28 @@ def create_fastapi_app(service: AuditFlowAppService):
             request_id=request_id,
         )
 
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/exports")
+    def list_export_packages(
+        cycle_id: str,
+        snapshot_version: int | None = None,
+        status: str | None = None,
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        items = service.list_export_packages(
+            cycle_id,
+            snapshot_version=snapshot_version,
+            status=status,
+        )
+        page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
+
     @app.post(
         "/api/v1/auditflow/cycles/{cycle_id}/exports",
         status_code=202,

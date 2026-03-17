@@ -212,6 +212,14 @@ class AuditFlowRepository(Protocol):
         narrative_type: str | None = None,
     ) -> list[NarrativeSummary]: ...
 
+    def list_export_packages(
+        self,
+        cycle_id: str,
+        *,
+        snapshot_version: int | None = None,
+        status: str | None = None,
+    ) -> list[ExportPackageSummary]: ...
+
     def get_export_package(self, package_id: str) -> ExportPackageSummary: ...
 
     def record_cycle_processing_result(self, cycle_id: str, workflow_run_id: str, checkpoint_seq: int) -> None: ...
@@ -1533,6 +1541,27 @@ class SqlAlchemyAuditFlowRepository:
                 stmt = stmt.where(NarrativeRow.narrative_type == narrative_type)
             rows = session.scalars(stmt.order_by(NarrativeRow.snapshot_version.desc())).all()
             return [self._to_narrative(row) for row in rows]
+
+    def list_export_packages(
+        self,
+        cycle_id: str,
+        *,
+        snapshot_version: int | None = None,
+        status: str | None = None,
+    ) -> list[ExportPackageSummary]:
+        with self.session_factory() as session:
+            cycle_row = session.get(AuditCycleRow, cycle_id)
+            if cycle_row is None:
+                raise KeyError(cycle_id)
+            stmt = select(ExportPackageRow).where(ExportPackageRow.cycle_id == cycle_id)
+            if snapshot_version is not None:
+                stmt = stmt.where(ExportPackageRow.snapshot_version == snapshot_version)
+            if status is not None:
+                stmt = stmt.where(ExportPackageRow.status == status)
+            rows = session.scalars(
+                stmt.order_by(ExportPackageRow.created_at.desc(), ExportPackageRow.package_id.desc())
+            ).all()
+            return [self._to_export_package(row) for row in rows]
 
     def get_export_package(self, package_id: str) -> ExportPackageSummary:
         with self.session_factory() as session:
