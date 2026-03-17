@@ -349,19 +349,55 @@ class AuditFlowAppService:
         self,
         mapping_id: str,
         command: MappingReviewCommand | dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
     ) -> MappingReviewResponse:
         if isinstance(command, dict):
             command = MappingReviewCommand.model_validate(command)
-        return self.repository.review_mapping(mapping_id, command)
+        request_payload = {"mapping_id": mapping_id, **command.model_dump(mode="json")}
+        cached = self._load_idempotent_response(
+            operation="auditflow.review_mapping",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            model_type=MappingReviewResponse,
+        )
+        if cached is not None:
+            return cached
+        response = self.repository.review_mapping(mapping_id, command)
+        self._store_idempotent_response(
+            operation="auditflow.review_mapping",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            response_payload=response.model_dump(mode="json"),
+        )
+        return response
 
     def decide_gap(
         self,
         gap_id: str,
         command: GapDecisionCommand | dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
     ) -> GapSummary:
         if isinstance(command, dict):
             command = GapDecisionCommand.model_validate(command)
-        return self.repository.decide_gap(gap_id, command)
+        request_payload = {"gap_id": gap_id, **command.model_dump(mode="json")}
+        cached = self._load_idempotent_response(
+            operation="auditflow.decide_gap",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            model_type=GapSummary,
+        )
+        if cached is not None:
+            return cached
+        response = self.repository.decide_gap(gap_id, command)
+        self._store_idempotent_response(
+            operation="auditflow.decide_gap",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            response_payload=response.model_dump(mode="json"),
+        )
+        return response
 
     def list_narratives(
         self,

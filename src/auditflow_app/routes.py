@@ -218,81 +218,160 @@ def create_fastapi_app(service: AuditFlowAppService):
             has_more=has_more,
         )
 
-    @app.get("/api/v1/auditflow/cycles/{cycle_id}/dashboard", response_model=AuditCycleDashboardResponse)
-    def get_cycle_dashboard(cycle_id: str) -> AuditCycleDashboardResponse:
-        return service.get_cycle_dashboard(cycle_id)
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/dashboard")
+    def get_cycle_dashboard(
+        cycle_id: str,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.get_cycle_dashboard(cycle_id),
+            request_id=request_id,
+        )
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/controls")
     def list_controls(
         cycle_id: str,
         coverage_status: str | None = None,
         search: str | None = None,
-    ) -> list[ControlCoverageSummary]:
-        return service.list_controls(cycle_id, coverage_status=coverage_status, search=search)
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        items = service.list_controls(cycle_id, coverage_status=coverage_status, search=search)
+        page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
-    @app.get("/api/v1/auditflow/cycles/{cycle_id}/mappings", response_model=MappingListResponse)
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/mappings")
     def list_mappings(
         cycle_id: str,
         control_state_id: str | None = None,
         mapping_status: str | None = None,
-    ) -> MappingListResponse:
-        return service.list_mappings(
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        response = service.list_mappings(
             cycle_id,
             control_state_id=control_state_id,
             mapping_status=mapping_status,
         )
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
-    @app.get("/api/v1/auditflow/cycles/{cycle_id}/controls/{control_state_id}", response_model=ControlDetailResponse)
-    def get_control_detail(cycle_id: str, control_state_id: str) -> ControlDetailResponse:
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/controls/{control_state_id}")
+    def get_control_detail(
+        cycle_id: str,
+        control_state_id: str,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
         del cycle_id
-        return service.get_control_detail(control_state_id)
+        return success_envelope(
+            service.get_control_detail(control_state_id),
+            request_id=request_id,
+        )
 
-    @app.get("/api/v1/auditflow/evidence/{evidence_id}", response_model=EvidenceDetail)
-    def get_evidence(evidence_id: str) -> EvidenceDetail:
-        return service.get_evidence(evidence_id)
+    @app.get("/api/v1/auditflow/evidence/{evidence_id}")
+    def get_evidence(
+        evidence_id: str,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.get_evidence(evidence_id),
+            request_id=request_id,
+        )
 
-    @app.get("/api/v1/auditflow/cycles/{cycle_id}/gaps", response_model=list[GapSummary])
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/gaps")
     def list_gaps(
         cycle_id: str,
         status: str | None = None,
         severity: str | None = None,
-    ) -> list[GapSummary]:
-        return service.list_gaps(cycle_id, status=status, severity=severity)
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        items = service.list_gaps(cycle_id, status=status, severity=severity)
+        page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
-    @app.get("/api/v1/auditflow/cycles/{cycle_id}/review-queue", response_model=ReviewQueueResponse)
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/review-queue")
     def list_review_queue(
         cycle_id: str,
         control_state_id: str | None = None,
         severity: str | None = None,
         sort: str = "recent",
-    ) -> ReviewQueueResponse:
-        return service.list_review_queue(
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        response = service.list_review_queue(
             cycle_id,
             control_state_id=control_state_id,
             severity=severity,
             sort=sort,
         )
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
-    @app.get("/api/v1/auditflow/cycles/{cycle_id}/review-decisions", response_model=ReviewDecisionListResponse)
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/review-decisions")
     def list_review_decisions(
         cycle_id: str,
         mapping_id: str | None = None,
         gap_id: str | None = None,
-    ) -> ReviewDecisionListResponse:
-        return service.list_review_decisions(cycle_id, mapping_id=mapping_id, gap_id=gap_id)
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        response = service.list_review_decisions(cycle_id, mapping_id=mapping_id, gap_id=gap_id)
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
-    @app.get("/api/v1/auditflow/review-queue", response_model=ReviewQueueResponse)
+    @app.get("/api/v1/auditflow/review-queue")
     def list_review_queue_global(
         cycle_id: str,
         control_state_id: str | None = None,
         severity: str | None = None,
         sort: str = "recent",
-    ) -> ReviewQueueResponse:
-        return service.list_review_queue(
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        response = service.list_review_queue(
             cycle_id,
             control_state_id=control_state_id,
             severity=severity,
             sort=sort,
+        )
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
         )
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/imports")
@@ -352,33 +431,70 @@ def create_fastapi_app(service: AuditFlowAppService):
             workflow_run_id=response.workflow_run_id,
         )
 
-    @app.post("/api/v1/auditflow/import-jobs/dispatch", response_model=ImportDispatchResponse)
-    def dispatch_import_jobs() -> ImportDispatchResponse:
-        return service.dispatch_import_jobs()
+    @app.post("/api/v1/auditflow/import-jobs/dispatch")
+    def dispatch_import_jobs(
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.dispatch_import_jobs(),
+            request_id=request_id,
+        )
 
-    @app.post("/api/v1/auditflow/mappings/{mapping_id}/review", response_model=MappingReviewResponse)
-    def review_mapping(mapping_id: str, command: MappingReviewCommand) -> MappingReviewResponse:
-        return service.review_mapping(mapping_id, command)
+    @app.post("/api/v1/auditflow/mappings/{mapping_id}/review")
+    def review_mapping(
+        mapping_id: str,
+        command: MappingReviewCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.review_mapping(mapping_id, command, idempotency_key=idempotency_key),
+            request_id=request_id,
+        )
 
-    @app.post("/api/v1/auditflow/gaps/{gap_id}/decision", response_model=GapSummary)
-    def decide_gap(gap_id: str, command: GapDecisionCommand) -> GapSummary:
-        return service.decide_gap(gap_id, command)
+    @app.post("/api/v1/auditflow/gaps/{gap_id}/decision")
+    def decide_gap(
+        gap_id: str,
+        command: GapDecisionCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.decide_gap(gap_id, command, idempotency_key=idempotency_key),
+            request_id=request_id,
+        )
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/narratives")
     def list_narratives(
         cycle_id: str,
         snapshot_version: int | None = None,
         narrative_type: str | None = None,
-    ) -> list[NarrativeSummary]:
-        return service.list_narratives(
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        items = service.list_narratives(
             cycle_id,
             snapshot_version=snapshot_version,
             narrative_type=narrative_type,
         )
+        page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
+        return success_envelope(
+            page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
-    @app.post("/api/v1/auditflow/cycles/process", response_model=AuditFlowRunResponse)
-    def process_cycle(command: CycleProcessingCommand) -> AuditFlowRunResponse:
-        return service.process_cycle(command)
+    @app.post("/api/v1/auditflow/cycles/process")
+    def process_cycle(
+        command: CycleProcessingCommand,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.process_cycle(command),
+            request_id=request_id,
+        )
 
     @app.post(
         "/api/v1/auditflow/cycles/{cycle_id}/exports",
@@ -397,9 +513,15 @@ def create_fastapi_app(service: AuditFlowAppService):
             workflow_run_id=response.workflow_run_id,
         )
 
-    @app.post("/api/v1/auditflow/exports/generate", response_model=AuditFlowRunResponse)
-    def generate_export(command: ExportGenerationCommand) -> AuditFlowRunResponse:
-        return service.generate_export(command)
+    @app.post("/api/v1/auditflow/exports/generate")
+    def generate_export(
+        command: ExportGenerationCommand,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.generate_export(command),
+            request_id=request_id,
+        )
 
     @app.get("/api/v1/auditflow/exports/{package_id}")
     def get_export_package(

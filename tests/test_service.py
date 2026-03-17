@@ -355,6 +355,41 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(resolved.status, "resolved")
         self.assertEqual(reopened.status, "open")
 
+    def test_review_mapping_is_idempotent_for_repeated_key(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        first = service.review_mapping(
+            "mapping-1",
+            mapping_review_command(),
+            idempotency_key="mapping-review-1",
+        )
+        second = service.review_mapping(
+            "mapping-1",
+            mapping_review_command(),
+            idempotency_key="mapping-review-1",
+        )
+
+        self.assertEqual(first.mapping_status, second.mapping_status)
+        self.assertEqual(first.mapping_id, second.mapping_id)
+
+    def test_gap_decision_rejects_idempotency_conflict(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.decide_gap(
+            "gap-1",
+            gap_decision_command(decision="resolve_gap"),
+            idempotency_key="gap-decision-conflict",
+        )
+
+        with self.assertRaisesRegex(ValueError, "IDEMPOTENCY_CONFLICT"):
+            service.decide_gap(
+                "gap-1",
+                gap_decision_command(decision="acknowledge"),
+                idempotency_key="gap-decision-conflict",
+            )
+
     def test_duplicate_upload_imports_collapse_before_dispatch(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)

@@ -36,6 +36,7 @@
 - Cycle list queries now support `status` filtering and import list routes now accept the contract-level `status` query alias
 - Workspace and cycle create/read models now persist contract-facing slug, owner, audit-period, and snapshot timestamp fields while accepting contract request aliases
 - Cycle creation plus upload/external import and export submission now support persisted idempotency keys, and cycle/import list routes now emit shared envelope metadata with cursor pagination
+- Review mapping and gap decision mutations now also support persisted idempotency keys, and the rest of the product read surface now emits shared envelopes instead of bare payloads
 - Control matrix queries now support `coverage_status` and `search` filters at the product layer
 - Review queue queries now support `control_state_id`, `severity`, and `sort=recent|ranking` filtering at the product layer
 - Gap transitions now enforce a stricter terminal policy: `acknowledge` only from `open`, `reopen_gap` only from `resolved`

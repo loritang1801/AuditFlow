@@ -25,8 +25,8 @@ Status: partially implemented
 
 Missing or partial:
 
-1. Workspace/cycle resource models now carry contract-aligned slug/owner/period/snapshot fields, and cycle/import routes now use shared success envelopes with cursor metadata, but full product-wide envelope parity is still missing.
-2. Core cycle/import/export routes now enforce persisted idempotency keys, but the rest of the mutation surface has not been upgraded yet.
+1. Workspace/cycle resource models now carry contract-aligned slug/owner/period/snapshot fields, and product read routes now largely use shared success envelopes with cursor metadata, but shared workflow endpoints and full cross-product parity are still incomplete.
+2. Core cycle/import/export routes plus reviewer mapping/gap mutations now enforce persisted idempotency keys, but the rest of the mutation surface has not been upgraded yet.
 3. Workspace/cycle write endpoints still do not cover the full contract surface beyond create/read plus current query filters.
 4. SSE and async event surfaces are not exposed at the product layer.
 
