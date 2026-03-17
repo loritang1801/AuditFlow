@@ -114,6 +114,15 @@ class AuditFlowAppService:
     def get_evidence(self, evidence_id: str) -> EvidenceDetail:
         return self.repository.get_evidence(evidence_id)
 
+    def list_gaps(
+        self,
+        cycle_id: str,
+        *,
+        status: str | None = None,
+        severity: str | None = None,
+    ) -> list[GapSummary]:
+        return self.repository.list_gaps(cycle_id, status=status, severity=severity)
+
     def list_review_queue(self, cycle_id: str) -> ReviewQueueResponse:
         return self.repository.list_review_queue(cycle_id)
 

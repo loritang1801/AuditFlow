@@ -140,6 +140,14 @@ def create_fastapi_app(service: AuditFlowAppService):
     def get_evidence(evidence_id: str) -> EvidenceDetail:
         return service.get_evidence(evidence_id)
 
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/gaps", response_model=list[GapSummary])
+    def list_gaps(
+        cycle_id: str,
+        status: str | None = None,
+        severity: str | None = None,
+    ) -> list[GapSummary]:
+        return service.list_gaps(cycle_id, status=status, severity=severity)
+
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/review-queue", response_model=ReviewQueueResponse)
     def list_review_queue(cycle_id: str) -> ReviewQueueResponse:
         return service.list_review_queue(cycle_id)

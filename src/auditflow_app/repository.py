@@ -106,6 +106,14 @@ class AuditFlowRepository(Protocol):
 
     def get_evidence(self, evidence_id: str) -> EvidenceDetail: ...
 
+    def list_gaps(
+        self,
+        cycle_id: str,
+        *,
+        status: str | None = None,
+        severity: str | None = None,
+    ) -> list[GapSummary]: ...
+
     def list_review_queue(self, cycle_id: str) -> ReviewQueueResponse: ...
 
     def list_review_decisions(
@@ -797,6 +805,25 @@ class SqlAlchemyAuditFlowRepository:
                     for row in chunk_rows
                 ],
             )
+
+    def list_gaps(
+        self,
+        cycle_id: str,
+        *,
+        status: str | None = None,
+        severity: str | None = None,
+    ) -> list[GapSummary]:
+        with self.session_factory() as session:
+            stmt = select(GapRow).join(
+                ControlCoverageRow,
+                GapRow.control_state_id == ControlCoverageRow.control_state_id,
+            ).where(ControlCoverageRow.cycle_id == cycle_id)
+            if status is not None:
+                stmt = stmt.where(GapRow.status == status)
+            if severity is not None:
+                stmt = stmt.where(GapRow.severity == severity)
+            rows = session.scalars(stmt.order_by(GapRow.updated_at.desc())).all()
+            return [self._to_gap(row) for row in rows]
 
     def list_review_queue(self, cycle_id: str) -> ReviewQueueResponse:
         with self.session_factory() as session:

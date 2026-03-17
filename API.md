@@ -440,6 +440,21 @@ Response:
 
 - `200 OK` with `EvidenceDetail`
 
+### 4.11.1 `GET /api/v1/auditflow/cycles/:cycleId/gaps`
+
+Purpose: list gap records for one cycle with optional status/severity filters.
+
+Auth: `reviewer` or stronger
+
+Query params:
+
+- `status`
+- `severity`
+
+Response:
+
+- `200 OK` with `GapSummary[]`
+
 ### 4.12 `GET /api/v1/auditflow/review-queue`
 
 Purpose: list pending review work for one cycle.

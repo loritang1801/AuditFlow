@@ -30,6 +30,7 @@
 - Import processing now persists raw artifact text, normalized artifact text, and multi-chunk evidence rows before reviewer mapping
 - Upload imports now normalize CSV, JSON, and plain-text artifacts into structured evidence chunks with parser metadata
 - Reviewer actions now append immutable `review_decision` audit rows for mapping and gap decisions
+- Cycle-level gap records can now be queried with status/severity filters for reviewer workbench backends
 - Review history can now be queried at the cycle level with optional mapping/gap filters for reviewer workbench backends
 - `routes.py` now contains explicit domain-error-to-HTTP mapping logic for product APIs
 - Export submission now rejects cycles with no accepted mappings, open review items, stale snapshot requests, and duplicate queued exports
@@ -49,7 +50,7 @@
 1. Add OCR and binary file parsers beyond the current CSV/JSON/text-backed import path
 2. Expand worker execution from local polling into long-running/background process supervision
 3. Add richer reviewer concurrency and terminal-state conflict handling around mappings and gaps
-4. Expand reviewer workbench state/query coverage beyond current review-decision history and broader import edge-case coverage
+4. Expand reviewer workbench state/query coverage beyond current review-decision history, cycle-level gap listing, and broader import edge-case coverage
 
 ## Local Note
 
