@@ -25,10 +25,10 @@ Status: partially implemented
 
 Missing or partial:
 
-1. Workspace/cycle resource models now carry contract-aligned slug/owner/period/snapshot fields, and product read routes now largely use shared success envelopes with cursor metadata, but shared workflow endpoints and full cross-product parity are still incomplete.
-2. Core cycle/import/export routes plus reviewer mapping/gap mutations now enforce persisted idempotency keys, but the rest of the mutation surface has not been upgraded yet.
+1. Workspace/cycle resource models now carry contract-aligned slug/owner/period/snapshot fields, product read routes plus shared workflow endpoints use shared success envelopes with cursor metadata, but full cross-product parity is still incomplete.
+2. Core cycle/import/export routes plus reviewer mapping/gap mutations now enforce persisted idempotency keys, but the remaining mutation surface has not been upgraded yet.
 3. Workspace/cycle write endpoints still do not cover the full contract surface beyond create/read plus current query filters.
-4. SSE and async event surfaces are not exposed at the product layer.
+4. Product SSE is now exposed at `/api/v1/events/stream`, but live coverage is still limited to outbox-backed events and there is still no auth/RBAC integration around the stream.
 
 ### 3. Ingestion and Connectors
 
@@ -61,7 +61,7 @@ Implemented:
 
 Missing or partial:
 
-1. No richer reviewer conflict resolution or terminal-state policy coverage.
+1. Mapping accepted/rejected locks plus gap acknowledge/reopen rules now exist, but richer reviewer conflict resolution is still missing.
 2. Review queue ordering is still simplified.
 
 ### 5. Retrieval, Memory, and Prompt Grounding
@@ -84,22 +84,22 @@ Implemented:
 1. Export workflow execution.
 2. Narrative row creation.
 3. Export package projection.
+4. Export manifest structure.
+5. Persisted package and manifest artifact packaging.
 
 Missing or partial:
 
 1. Basic export-readiness and stale/running validation now exist, but there is still no strict snapshot freeze ledger.
-2. No export manifest structure.
-3. No artifact packaging step beyond projection data.
 
 ### 7. Operations and Platform Integration
 
-Status: not started
+Status: partially implemented
 
 Missing or partial:
 
 1. No long-running worker supervision strategy in this repo.
 2. No auth/RBAC integration at the product route layer.
-3. No SSE forwarding for cycle/workspace live updates.
+3. SSE forwarding for cycle/workspace live updates now exists, but event coverage still depends on outbox-backed actions.
 4. No product-scoped replay/evaluation harness.
 
 ## Delivery Order
@@ -114,4 +114,4 @@ Missing or partial:
 
 ## Active Step
 
-Step 2 is the current implementation target.
+Step 7 is the current implementation target.

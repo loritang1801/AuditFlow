@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import importlib
+import json
+from datetime import UTC, datetime
 from typing import Any
 
 ERROR_STATUS_BY_CODE = {
@@ -135,11 +138,127 @@ def paginate_collection(items: list[Any], *, cursor: str | None = None, limit: i
     return page, (_encode_cursor(next_offset) if has_more else None), has_more
 
 
+def _event_topic(event_name: str) -> str:
+    if event_name.startswith("workflow."):
+        return "workflow"
+    if event_name.startswith("approval."):
+        return "approval"
+    if event_name.startswith("artifact."):
+        return "artifact"
+    if event_name.startswith("auditflow."):
+        return "auditflow"
+    return "workspace"
+
+
+def _isoformat_utc(value: datetime) -> str:
+    timestamp = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _payload_lookup(payload: dict[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _event_topics(context: dict[str, object]) -> set[str]:
+    payload = context.get("payload")
+    normalized_payload = payload if isinstance(payload, dict) else {}
+    topics = {str(context["topic"]), f"auditflow.workspace.{context['workspace_id']}"}
+
+    cycle_id = _payload_lookup(normalized_payload, "cycle_id")
+    if cycle_id is None and str(context["subject_type"]) in {"audit_cycle", "auditflow_cycle", "cycle"}:
+        cycle_id = str(context["subject_id"])
+    if cycle_id is not None:
+        topics.add(f"auditflow.cycle.{cycle_id}")
+
+    package_id = _payload_lookup(normalized_payload, "package_id")
+    if package_id is None and str(context["subject_type"]) in {"audit_package", "export_package", "export"}:
+        package_id = str(context["subject_id"])
+    if package_id is not None:
+        topics.add(f"auditflow.export.{package_id}")
+
+    return topics
+
+
+def _matches_event_topic(context: dict[str, object], requested_topic: str | None) -> bool:
+    if requested_topic is None:
+        return True
+    return requested_topic in _event_topics(context)
+
+
+def _normalize_resume_after_id(pending_events: list[Any], resume_after_id: str | None) -> str | None:
+    if resume_after_id is None:
+        return None
+    for stored in pending_events:
+        if stored.event.event_id == resume_after_id:
+            return resume_after_id
+    return None
+
+
+def _format_sse_message(*, event_id: str, event_name: str, payload: dict[str, object]) -> str:
+    return f"id: {event_id}\nevent: {event_name}\ndata: {json.dumps(payload, sort_keys=True)}\n\n"
+
+
+def _resolve_outbox_event_context(service: AuditFlowAppService, event) -> dict[str, object] | None:
+    payload = dict(getattr(event, "payload", {}) or {})
+    state: dict[str, object] = {}
+    runtime_stores = getattr(service, "runtime_stores", None)
+    if runtime_stores is not None and hasattr(runtime_stores, "state_store"):
+        try:
+            state_record = runtime_stores.state_store.load(event.workflow_run_id)
+        except Exception:  # noqa: BLE001
+            state = {}
+        else:
+            state = dict(getattr(state_record, "state", {}) or {})
+    workspace_id = (
+        state.get("workspace_id")
+        or state.get("audit_workspace_id")
+        or state.get("workspace")
+        or payload.get("workspace_id")
+        or payload.get("audit_workspace_id")
+        or payload.get("workspace")
+    )
+    if workspace_id is None:
+        return None
+    subject_type = (
+        state.get("subject_type")
+        or payload.get("subject_type")
+        or ("audit_cycle" if payload.get("cycle_id") is not None else None)
+        or ("audit_package" if payload.get("package_id") is not None else None)
+        or event.aggregate_type
+    )
+    subject_id = (
+        state.get("subject_id")
+        or payload.get("subject_id")
+        or payload.get("cycle_id")
+        or payload.get("package_id")
+        or event.aggregate_id
+    )
+    return {
+        "event_id": event.event_id,
+        "event_type": event.event_name,
+        "organization_id": str(
+            state.get("organization_id")
+            or payload.get("organization_id")
+            or "unknown-org"
+        ),
+        "workspace_id": str(workspace_id),
+        "subject_type": str(subject_type),
+        "subject_id": str(subject_id),
+        "occurred_at": _isoformat_utc(event.emitted_at),
+        "payload": payload,
+        "topic": _event_topic(event.event_name),
+    }
+
+
 def create_fastapi_app(service: AuditFlowAppService):
     ap = load_shared_agent_platform()
     try:
         from fastapi import FastAPI, Header, Request
-        from fastapi.responses import JSONResponse
+        from fastapi.responses import JSONResponse, StreamingResponse
     except ImportError as exc:
         errors_module = importlib.import_module(f"{ap.__name__}.errors")
         FastAPIUnavailableError = errors_module.FastAPIUnavailableError
@@ -158,17 +277,98 @@ def create_fastapi_app(service: AuditFlowAppService):
         status_code, payload = map_domain_error(exc, path=str(request.url.path))
         return JSONResponse(status_code=status_code, content=payload)
 
-    @app.get("/health", response_model=HealthResponse)
-    def health() -> HealthResponse:
-        return HealthResponse(status="ok", product="auditflow")
+    @app.get("/health")
+    def health(
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            HealthResponse(status="ok", product="auditflow"),
+            request_id=request_id,
+        )
 
     @app.get("/api/v1/workflows")
-    def list_workflows():
-        return service.list_workflows()
+    def list_workflows(
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.list_workflows(),
+            request_id=request_id,
+        )
 
-    @app.get("/api/v1/workflows/{workflow_run_id}", response_model=AuditFlowWorkflowStateResponse)
-    def get_workflow_state(workflow_run_id: str) -> AuditFlowWorkflowStateResponse:
-        return service.get_workflow_state(workflow_run_id)
+    @app.get("/api/v1/workflows/{workflow_run_id}")
+    def get_workflow_state(
+        workflow_run_id: str,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.get_workflow_state(workflow_run_id),
+            request_id=request_id,
+        )
+
+    @app.get("/api/v1/events/stream")
+    async def stream_events(
+        workspace_id: str,
+        topic: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ):
+        runtime_stores = getattr(service, "runtime_stores", None)
+        outbox_store = getattr(runtime_stores, "outbox_store", None)
+
+        async def event_stream():
+            seen_event_ids: set[str] = set()
+            resume_after_id = last_event_id
+            while True:
+                emitted_any = False
+                pending = outbox_store.list_pending() if outbox_store is not None else []
+                resume_after_id = _normalize_resume_after_id(pending, resume_after_id)
+                resume_matched = resume_after_id is None
+                for stored in pending:
+                    event = stored.event
+                    if event.event_id in seen_event_ids:
+                        continue
+                    if not resume_matched:
+                        if event.event_id == resume_after_id:
+                            resume_matched = True
+                        continue
+                    context = _resolve_outbox_event_context(service, event)
+                    if context is None:
+                        continue
+                    if str(context["workspace_id"]) != workspace_id:
+                        continue
+                    if not _matches_event_topic(context, topic):
+                        continue
+                    if subject_type is not None and str(context["subject_type"]) != subject_type:
+                        continue
+                    if subject_id is not None and str(context["subject_id"]) != subject_id:
+                        continue
+                    seen_event_ids.add(event.event_id)
+                    emitted_any = True
+                    yield _format_sse_message(
+                        event_id=event.event_id,
+                        event_name=event.event_name,
+                        payload={
+                            key: value
+                            for key, value in context.items()
+                            if key != "topic"
+                        },
+                    )
+                resume_after_id = None
+                if not emitted_any:
+                    heartbeat_at = datetime.now(UTC)
+                    heartbeat = {
+                        "workspace_id": workspace_id,
+                        "occurred_at": _isoformat_utc(heartbeat_at),
+                    }
+                    yield _format_sse_message(
+                        event_id=f"heartbeat-{int(heartbeat_at.timestamp() * 1000)}",
+                        event_name="heartbeat",
+                        payload=heartbeat,
+                    )
+                await asyncio.sleep(15)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.post("/api/v1/auditflow/workspaces", status_code=201)
     def create_workspace(

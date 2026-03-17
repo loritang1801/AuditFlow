@@ -37,6 +37,7 @@
 - Workspace and cycle create/read models now persist contract-facing slug, owner, audit-period, and snapshot timestamp fields while accepting contract request aliases
 - Cycle creation plus upload/external import and export submission now support persisted idempotency keys, and cycle/import list routes now emit shared envelope metadata with cursor pagination
 - Review mapping and gap decision mutations now also support persisted idempotency keys, and the rest of the product read surface now emits shared envelopes instead of bare payloads
+- Shared health/workflow endpoints now also emit shared envelopes, and `/api/v1/events/stream` now supports workspace/cycle/export topic filters with payload-backed event context fallback when workflow state is unavailable
 - Control matrix queries now support `coverage_status` and `search` filters at the product layer
 - Review queue queries now support `control_state_id`, `severity`, and `sort=recent|ranking` filtering at the product layer
 - Gap transitions now enforce a stricter terminal policy: `acknowledge` only from `open`, `reopen_gap` only from `resolved`
@@ -58,7 +59,7 @@
 
 1. Add OCR and binary file parsers beyond the current CSV/JSON/text-backed import path
 2. Expand worker execution from local polling into long-running/background process supervision
-3. Expand reviewer concurrency and terminal-state conflict handling beyond the current stricter gap transition policy
+3. Expand reviewer concurrency handling beyond the current mapping/gap terminal-state policy coverage
 4. Expand reviewer workbench state/query coverage beyond current review-decision history, cycle-level gap/mapping listing, and broader import edge-case coverage
 
 ## Local Note
