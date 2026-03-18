@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -37,6 +38,12 @@ from auditflow_app.sample_payloads import (
 )
 
 EXPECTED_SOC2_CONTROL_CODES = ["CC6.1", "CC6.2", "CC7.2", "CC8.1"]
+
+
+def _create_repo_tempdir(prefix: str) -> Path:
+    temp_root = ROOT / ".tmp"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=temp_root))
 
 
 class AuditFlowServiceTests(unittest.TestCase):
@@ -922,24 +929,25 @@ class AuditFlowServiceTests(unittest.TestCase):
             )
 
     def test_sqlalchemy_repository_persists_export_across_service_instances(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            database_url = f"sqlite+pysqlite:///{Path(tmp_dir) / 'auditflow.db'}"
+        tmp_dir = _create_repo_tempdir("auditflow-db-")
+        database_url = f"sqlite+pysqlite:///{(tmp_dir / 'auditflow.db').resolve().as_posix()}"
 
-            service_one = build_app_service(database_url=database_url)
-            service_two = None
-            try:
-                result = service_one.generate_export(
-                    export_generation_command(workflow_run_id="auditflow-persist-export-1")
-                )
-                service_one.close()
+        service_one = build_app_service(database_url=database_url)
+        service_two = None
+        try:
+            result = service_one.generate_export(
+                export_generation_command(workflow_run_id="auditflow-persist-export-1")
+            )
+            service_one.close()
 
-                service_two = build_app_service(database_url=database_url)
-                dashboard = service_two.get_cycle_dashboard("cycle-1")
+            service_two = build_app_service(database_url=database_url)
+            dashboard = service_two.get_cycle_dashboard("cycle-1")
 
-                self.assertEqual(result.current_state, "exported")
-                self.assertIsNotNone(dashboard.latest_export_package)
-                self.assertEqual(dashboard.latest_export_package.workflow_run_id, "auditflow-persist-export-1")
-            finally:
-                service_one.close()
-                if service_two is not None:
-                    service_two.close()
+            self.assertEqual(result.current_state, "exported")
+            self.assertIsNotNone(dashboard.latest_export_package)
+            self.assertEqual(dashboard.latest_export_package.workflow_run_id, "auditflow-persist-export-1")
+        finally:
+            service_one.close()
+            if service_two is not None:
+                service_two.close()
+            shutil.rmtree(tmp_dir, ignore_errors=True)
