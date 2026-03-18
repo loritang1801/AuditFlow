@@ -75,6 +75,16 @@
 4. Expand reviewer workbench state/query coverage beyond current review-decision history, evidence search, memory inspection, cycle-level gap/mapping listing, and broader import edge-case coverage
 5. Expand the replay/evaluation harness beyond the current built-in fixture suite and basic saved-baseline catalog into fixture versioning and curated regression packs
 
+## Resume Point
+
+- Latest completed commit: `fe01ffa` `Add AuditFlow retrieval and memory foundations`
+- Retrieval/memory v1 is now in place: lexical evidence search, persisted chunk index rows, and reviewer-derived organization/cycle memory records
+- The next implementation start point should be one of these:
+  1. Upgrade retrieval from lexical-only to true hybrid retrieval with vector/semantic ranking
+  2. Wire memory/retrieval outputs directly into mapper and skeptic prompt assembly
+  3. Replace the local header authorizer with shared session/token validation
+- If continuing the current product track, start with item 1 above before expanding more read APIs
+
 ## Local Note
 
 The local workspace source of truth for shared assets remains `D:\project\SharedAgentCore`.
