@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .auth import AuditFlowAuthorizer
 from .repository import SqlAlchemyAuditFlowRepository
 from .shared_runtime import load_shared_agent_platform
 from .service import AuditFlowAppService
@@ -58,12 +59,12 @@ def build_app_service(*, database_url: str | None = None) -> AuditFlowAppService
     )
 
 
-def build_fastapi_app(*, database_url: str | None = None):
+def build_fastapi_app(*, database_url: str | None = None, authorizer: AuditFlowAuthorizer | None = None):
     from .routes import create_fastapi_app
 
     service = build_app_service(database_url=database_url)
     try:
-        return create_fastapi_app(service)
+        return create_fastapi_app(service, authorizer=authorizer)
     except Exception:
         service.close()
         raise

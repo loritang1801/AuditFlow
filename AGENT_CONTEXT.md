@@ -27,6 +27,7 @@
 - Import submission is now outbox-driven: import requests enqueue `auditflow.import.requested` jobs, and dispatching those jobs triggers the shared `auditflow_cycle_processing` workflow plus evidence/chunk/mapping materialization
 - Import acceptance now also emits `auditflow.import.accepted` product outbox events alongside the worker-dispatch import job event
 - `worker.py` now provides a dedicated import worker over shared `OutboxDispatcher`, filters unrelated outbox events, and supports connector-specific handlers for `upload`, `jira`, and `confluence`
+- `worker.py` now also provides `AuditFlowImportWorkerSupervisor` with retry/backoff, idle-stop, and heartbeat emission, and `scripts/run_import_worker.py` now supports supervised/long-running execution modes
 - Import acceptance now collapses duplicate upload and connector requests before enqueueing normalization jobs
 - Import processing now persists raw artifact text, normalized artifact text, and multi-chunk evidence rows before reviewer mapping
 - Upload imports now normalize CSV, JSON, Markdown, HTML, and plain-text artifacts into structured evidence chunks with parser metadata
@@ -42,6 +43,7 @@
 - Review mapping and gap decision mutations now also support persisted idempotency keys, and the rest of the product read surface now emits shared envelopes instead of bare payloads
 - Mapping, gap, and review-queue reads now surface reviewer `snapshot_version`, and reviewer mutations reject stale snapshot decisions when the cycle has advanced or the caller provides a mismatched `expected_snapshot_version`
 - Shared health/workflow endpoints now also emit shared envelopes, and `/api/v1/events/stream` now supports workspace/cycle/export topic filters with payload-backed event context fallback when workflow state is unavailable
+- `routes.py` now enforces tenant-scoped minimum-role checks via a header-based authorizer hook, and `build_fastapi_app()` accepts custom authorizer injection for shared-platform integration later
 - Control matrix queries now support `coverage_status` and `search` filters at the product layer
 - Review queue queries now support `control_state_id`, `severity`, and `sort=recent|ranking` filtering at the product layer
 - Gap transitions now enforce a stricter terminal policy: `acknowledge` only from `open`, `reopen_gap` only from `resolved`
@@ -64,9 +66,10 @@
 ## First Implementation Targets
 
 1. Add OCR and binary file parsers beyond the current CSV/JSON/text-backed import path
-2. Expand worker execution from local polling into long-running/background process supervision
+2. Replace the current header-based route auth hook with shared session/token validation
 3. Expand reviewer concurrency handling beyond the current mapping/gap terminal-state policy coverage
 4. Expand reviewer workbench state/query coverage beyond current review-decision history, cycle-level gap/mapping listing, and broader import edge-case coverage
+5. Add a product-scoped replay/evaluation harness for fixed import-to-export samples
 
 ## Local Note
 

@@ -11,6 +11,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from auditflow_app.api_models import AuditCycleSummary, AuditWorkspaceSummary
+from auditflow_app.auth import AuditFlowAuthorizationError, HeaderAuditFlowAuthorizer
 from auditflow_app.routes import (
     _event_topics,
     _event_topic,
@@ -18,10 +20,16 @@ from auditflow_app.routes import (
     _matches_event_topic,
     _normalize_resume_after_id,
     _resolve_outbox_event_context,
+    create_fastapi_app,
     map_domain_error,
     paginate_collection,
     success_envelope,
 )
+
+try:
+    from fastapi.testclient import TestClient
+except ImportError:  # pragma: no cover - exercised only when fastapi is absent
+    TestClient = None
 
 
 class AuditFlowRouteErrorMappingTests(unittest.TestCase):
@@ -206,6 +214,177 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
 
         self.assertIsNone(_normalize_resume_after_id(pending, "evt-missing"))
         self.assertEqual(_normalize_resume_after_id(pending, "evt-1"), "evt-1")
+
+
+class AuditFlowAuthorizationTests(unittest.TestCase):
+    def test_authorizer_defaults_to_viewer_role(self) -> None:
+        context = HeaderAuditFlowAuthorizer().authorize(
+            required_role="viewer",
+            authorization="Bearer test-token",
+            organization_id="org-1",
+        )
+
+        self.assertEqual(context.organization_id, "org-1")
+        self.assertEqual(context.role, "viewer")
+        self.assertEqual(context.user_id, "demo-user")
+
+    def test_authorizer_rejects_missing_tenant_header(self) -> None:
+        with self.assertRaises(AuditFlowAuthorizationError) as context:
+            HeaderAuditFlowAuthorizer().authorize(
+                required_role="viewer",
+                authorization="Bearer test-token",
+                organization_id=None,
+            )
+
+        self.assertEqual(context.exception.code, "TENANT_CONTEXT_REQUIRED")
+        self.assertEqual(context.exception.status_code, 400)
+
+    def test_authorizer_rejects_insufficient_role(self) -> None:
+        with self.assertRaises(AuditFlowAuthorizationError) as context:
+            HeaderAuditFlowAuthorizer().authorize(
+                required_role="reviewer",
+                authorization="Bearer test-token",
+                organization_id="org-1",
+                user_role="viewer",
+            )
+
+        self.assertEqual(context.exception.code, "AUTH_FORBIDDEN")
+        self.assertEqual(context.exception.status_code, 403)
+
+    def test_authorizer_accepts_org_admin_alias_for_product_admin_routes(self) -> None:
+        context = HeaderAuditFlowAuthorizer().authorize(
+            required_role="product_admin",
+            authorization="Bearer test-token",
+            organization_id="org-1",
+            user_role="org_admin",
+            user_id="admin-1",
+        )
+
+        self.assertEqual(context.role, "product_admin")
+        self.assertEqual(context.user_id, "admin-1")
+
+
+@unittest.skipIf(TestClient is None, "fastapi test client unavailable")
+class AuditFlowRouteAuthorizationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(create_fastapi_app(_stub_service()))
+
+    def test_health_route_remains_public(self) -> None:
+        response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["status"], "ok")
+
+    def test_viewer_route_requires_authorization_header(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/cycles",
+            params={"workspace_id": "ws-1"},
+            headers={"X-Organization-Id": "org-1"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["code"], "AUTH_REQUIRED")
+
+    def test_viewer_route_requires_organization_context(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/cycles",
+            params={"workspace_id": "ws-1"},
+            headers={"Authorization": "Bearer test-token"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "TENANT_CONTEXT_REQUIRED")
+
+    def test_reviewer_route_rejects_viewer_role(self) -> None:
+        response = self.client.post(
+            "/api/v1/auditflow/cycles",
+            headers={
+                **_auth_headers(role="viewer"),
+                "Idempotency-Key": "cycle-create-1",
+            },
+            json={
+                "workspace_id": "ws-1",
+                "cycle_name": "SOC2 2026",
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "AUTH_FORBIDDEN")
+
+    def test_reviewer_route_allows_reviewer_role(self) -> None:
+        response = self.client.post(
+            "/api/v1/auditflow/cycles",
+            headers={
+                **_auth_headers(role="reviewer"),
+                "Idempotency-Key": "cycle-create-2",
+            },
+            json={
+                "workspace_id": "ws-1",
+                "cycle_name": "SOC2 2026",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["data"]["id"], "cycle-1")
+
+    def test_product_admin_route_accepts_org_admin_alias(self) -> None:
+        response = self.client.post(
+            "/api/v1/auditflow/workspaces",
+            headers=_auth_headers(role="org_admin"),
+            json={
+                "name": "Acme SOC2",
+                "slug": "acme-soc2",
+                "default_framework": "SOC2",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["data"]["id"], "ws-1")
+
+
+def _auth_headers(*, role: str) -> dict[str, str]:
+    return {
+        "Authorization": "Bearer test-token",
+        "X-Organization-Id": "org-1",
+        "X-User-Id": "user-1",
+        "X-User-Role": role,
+    }
+
+
+def _stub_service():
+    created_at = datetime(2026, 3, 18, 15, 0, tzinfo=UTC)
+    workspace = AuditWorkspaceSummary(
+        workspace_id="ws-1",
+        workspace_name="Acme SOC2",
+        slug="acme-soc2",
+        framework_name="SOC2",
+        workspace_status="active",
+        created_at=created_at,
+    )
+    cycle = AuditCycleSummary(
+        cycle_id="cycle-1",
+        workspace_id="ws-1",
+        cycle_name="SOC2 2026",
+        cycle_status="draft",
+        framework_name="SOC2",
+        coverage_status="pending_review",
+        review_queue_count=0,
+        open_gap_count=0,
+    )
+    return SimpleNamespace(
+        list_workflows=lambda: [],
+        get_workflow_state=lambda workflow_run_id: {
+            "workflow_run_id": workflow_run_id,
+            "workflow_type": "auditflow_cycle",
+            "current_state": "reviewing",
+            "checkpoint_seq": 1,
+            "raw_state": {},
+        },
+        create_workspace=lambda command: workspace,
+        get_workspace=lambda workspace_id: workspace,
+        create_cycle=lambda command, idempotency_key=None: cycle,
+        list_cycles=lambda workspace_id, status=None: [cycle],
+    )
 
 
 if __name__ == "__main__":

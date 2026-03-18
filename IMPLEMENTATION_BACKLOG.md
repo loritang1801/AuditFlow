@@ -96,12 +96,16 @@ Missing or partial:
 
 Status: partially implemented
 
+Implemented:
+
+1. Import worker supervision now exists with retry/backoff, idle-stop controls, and heartbeat callbacks/CLI output for long-running polling.
+2. Product routes now enforce tenant header plus minimum-role checks through injectable auth/RBAC hooks.
+
 Missing or partial:
 
-1. No long-running worker supervision strategy in this repo.
-2. No auth/RBAC integration at the product route layer.
-3. SSE forwarding for cycle/workspace live updates now exists, with product events for import acceptance, review recording, and export progress/completion, but event coverage still depends on outbox-backed actions.
-4. No product-scoped replay/evaluation harness.
+1. Route auth currently uses a local header-based authorizer; shared session/token validation is still not wired through the product layer.
+2. SSE forwarding for cycle/workspace live updates now exists, with product events for import acceptance, review recording, and export progress/completion, but event coverage still depends on outbox-backed actions.
+3. No product-scoped replay/evaluation harness.
 
 ## Delivery Order
 
