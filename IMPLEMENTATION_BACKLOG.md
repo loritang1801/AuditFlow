@@ -100,13 +100,13 @@ Implemented:
 
 1. Import worker supervision now exists with retry/backoff, idle-stop controls, and heartbeat callbacks/CLI output for long-running polling.
 2. Product routes now enforce tenant header plus minimum-role checks through injectable auth/RBAC hooks.
-3. Product-scoped replay/evaluation harness now captures the fixed import-to-export demo scenario, emits baseline JSON plus JSON/Markdown comparison reports, and is runnable from `scripts/run_replay_harness.py`.
+3. Product-scoped replay/evaluation harness now captures fixed text/CSV/JSON/Markdown/HTML import-to-export scenarios, emits baseline JSON plus JSON/Markdown comparison reports, and is runnable from `scripts/run_replay_harness.py` with scenario listing and batch capture support.
 
 Missing or partial:
 
 1. Route auth currently uses a local header-based authorizer; shared session/token validation is still not wired through the product layer.
 2. SSE forwarding for cycle/workspace live updates now exists, with product events for import acceptance, review recording, and export progress/completion, but event coverage still depends on outbox-backed actions.
-3. Replay coverage is still limited to the fixed demo scenario; there is no broader fixture catalog or historical baseline management yet.
+3. Replay coverage is still limited to the built-in demo fixture suite; there is no broader historical baseline catalog, fixture versioning, or curated regression pack management yet.
 
 ## Delivery Order
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,9 +70,19 @@ class ReplayWorkflowEvaluation(ReplayHarnessModel):
     node_diffs: list[ReplayNodeDiffSummary] = Field(default_factory=list)
 
 
+class ReplayScenarioInfo(ReplayHarnessModel):
+    scenario_name: str
+    title: str
+    description: str
+    source_format: Literal["text", "csv", "json", "markdown", "html"]
+
+
 class ReplayScenarioBaseline(ReplayHarnessModel):
     baseline_id: str
     scenario_name: str
+    scenario_title: str | None = None
+    scenario_description: str | None = None
+    source_format: str | None = None
     captured_at: datetime
     workflows: list[ReplayWorkflowSummary] = Field(default_factory=list)
     baseline_artifact_path: str | None = None
@@ -81,6 +92,9 @@ class ReplayScenarioEvaluation(ReplayHarnessModel):
     report_id: str
     baseline_id: str
     scenario_name: str
+    scenario_title: str | None = None
+    scenario_description: str | None = None
+    source_format: str | None = None
     status: Literal["matched", "mismatched"]
     score: float
     mismatch_count: int
@@ -92,10 +106,115 @@ class ReplayScenarioEvaluation(ReplayHarnessModel):
 
 class ReplayScenarioExecution(ReplayHarnessModel):
     scenario_name: str
+    scenario_title: str | None = None
+    scenario_description: str | None = None
+    source_format: str | None = None
     workspace_id: str
     cycle_id: str
     package_id: str
     workflows: list[ReplayWorkflowSummary] = Field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class DemoReplayScenario:
+    scenario_name: str
+    title: str
+    description: str
+    source_format: Literal["text", "csv", "json", "markdown", "html"]
+    upload_overrides: dict[str, Any]
+
+
+DEMO_REPLAY_SCENARIOS: tuple[DemoReplayScenario, ...] = (
+    DemoReplayScenario(
+        scenario_name="demo_cycle_export",
+        title="Plain text access review",
+        description="Baseline text evidence path from import to export package generation.",
+        source_format="text",
+        upload_overrides={
+            "display_name": "Replay Access Review Text",
+            "source_locator": "uploads/access-review.txt",
+            "artifact_text": (
+                "Quarterly Access Review Export\n\n"
+                "Control owner: Security Engineering\n"
+                "Review period: 2026-Q1\n"
+                "Result: All privileged access assignments were reviewed and approved.\n\n"
+                "Reviewer notes:\n"
+                "- Production admins remain limited to the platform team.\n"
+                "- Two stale contractor accounts were removed before sign-off."
+            ),
+        },
+    ),
+    DemoReplayScenario(
+        scenario_name="csv_access_review",
+        title="CSV access review",
+        description="Structured CSV import exercising row-aware normalization and chunking.",
+        source_format="csv",
+        upload_overrides={
+            "display_name": "Replay Access Review CSV",
+            "source_locator": "uploads/access-review.csv",
+            "artifact_text": (
+                "reviewer,system,status\n"
+                "Security Engineering,production-admins,approved\n"
+                "Security Engineering,break-glass,approved\n"
+            ),
+        },
+    ),
+    DemoReplayScenario(
+        scenario_name="json_access_review",
+        title="JSON access review",
+        description="Nested JSON import exercising flattened retrieval-ready evidence fields.",
+        source_format="json",
+        upload_overrides={
+            "display_name": "Replay Access Review JSON",
+            "source_locator": "uploads/access-review.json",
+            "artifact_text": json.dumps(
+                {
+                    "review": {
+                        "owner": "Security Engineering",
+                        "quarter": "2026-Q1",
+                    },
+                    "controls": [
+                        {"code": "CC6.1", "status": "covered"},
+                        {"code": "CC6.2", "status": "covered"},
+                    ],
+                }
+            ),
+        },
+    ),
+    DemoReplayScenario(
+        scenario_name="markdown_access_review",
+        title="Markdown access review",
+        description="Sectioned Markdown import covering heading and bullet-preserving normalization.",
+        source_format="markdown",
+        upload_overrides={
+            "display_name": "Replay Access Review Markdown",
+            "source_locator": "uploads/access-review.md",
+            "artifact_text": (
+                "# Access Review\n\n"
+                "- Reviewer: Security Engineering\n"
+                "- Quarter: 2026-Q1\n\n"
+                "## Findings\n\n"
+                "1. Two stale contractor accounts were removed.\n"
+                "2. Break-glass access remained limited.\n"
+            ),
+        },
+    ),
+    DemoReplayScenario(
+        scenario_name="html_access_review",
+        title="HTML access review",
+        description="Portal-style HTML import covering markup stripping and textual chunk output.",
+        source_format="html",
+        upload_overrides={
+            "display_name": "Replay Access Review HTML",
+            "source_locator": "uploads/access-review.html",
+            "artifact_text": (
+                "<html><body><h1>Access Review</h1><p>Reviewer: Security Engineering</p>"
+                "<ul><li>Production admins approved</li><li>Break-glass reviewed</li></ul>"
+                "<p>All actions completed.</p></body></html>"
+            ),
+        },
+    ),
+)
 
 
 def replay_baseline_root() -> Path:
@@ -128,11 +247,42 @@ class AuditFlowReplayHarness:
         self._baseline_root.mkdir(parents=True, exist_ok=True)
         self._report_root.mkdir(parents=True, exist_ok=True)
 
+    def list_demo_scenarios(self) -> list[ReplayScenarioInfo]:
+        return [
+            ReplayScenarioInfo(
+                scenario_name=scenario.scenario_name,
+                title=scenario.title,
+                description=scenario.description,
+                source_format=scenario.source_format,
+            )
+            for scenario in DEMO_REPLAY_SCENARIOS
+        ]
+
+    def capture_demo_baselines(
+        self,
+        *,
+        scenario_names: list[str] | None = None,
+    ) -> list[ReplayScenarioBaseline]:
+        return [
+            self.capture_demo_baseline(scenario_name=scenario_name)
+            for scenario_name in self._resolve_demo_scenario_names(scenario_names)
+        ]
+
+    def evaluate_demo_suite(
+        self,
+        baselines: list[ReplayScenarioBaseline],
+    ) -> list[ReplayScenarioEvaluation]:
+        return [self.evaluate_demo_scenario(baseline) for baseline in baselines]
+
     def capture_demo_baseline(self, *, scenario_name: str = "demo_cycle_export") -> ReplayScenarioBaseline:
+        scenario = self._lookup_demo_scenario(scenario_name)
         execution = self._run_demo_scenario(scenario_name=scenario_name, run_label="baseline")
         baseline = ReplayScenarioBaseline(
             baseline_id=f"baseline-{uuid4().hex[:10]}",
             scenario_name=scenario_name,
+            scenario_title=scenario.title,
+            scenario_description=scenario.description,
+            source_format=scenario.source_format,
             captured_at=datetime.now(UTC),
             workflows=execution.workflows,
         )
@@ -140,6 +290,7 @@ class AuditFlowReplayHarness:
         return baseline.model_copy(update={"baseline_artifact_path": str(artifact_path)})
 
     def evaluate_demo_scenario(self, baseline: ReplayScenarioBaseline) -> ReplayScenarioEvaluation:
+        scenario = self._lookup_demo_scenario(baseline.scenario_name)
         execution = self._run_demo_scenario(scenario_name=baseline.scenario_name, run_label="replay")
         workflow_reports: list[ReplayWorkflowEvaluation] = []
         total_mismatches = 0
@@ -154,6 +305,9 @@ class AuditFlowReplayHarness:
             report_id=f"report-{uuid4().hex[:10]}",
             baseline_id=baseline.baseline_id,
             scenario_name=baseline.scenario_name,
+            scenario_title=baseline.scenario_title or scenario.title,
+            scenario_description=baseline.scenario_description or scenario.description,
+            source_format=baseline.source_format or scenario.source_format,
             status=("matched" if total_mismatches == 0 else "mismatched"),
             score=max(0.0, 1.0 - (total_mismatches / max_checks)),
             mismatch_count=total_mismatches,
@@ -174,6 +328,7 @@ class AuditFlowReplayHarness:
         scenario_name: str,
         run_label: str,
     ) -> ReplayScenarioExecution:
+        scenario = self._lookup_demo_scenario(scenario_name)
         service = self._service_factory()
         suffix = uuid4().hex[:8]
         workspace = None
@@ -194,10 +349,11 @@ class AuditFlowReplayHarness:
             export_workflow_run_id = f"{scenario_name}-{run_label}-export-{suffix}"
             accepted = service.create_upload_import(
                 cycle.cycle_id,
-                upload_import_command(
+                self._scenario_upload_command(
+                    scenario,
                     workflow_run_id=cycle_workflow_run_id,
-                    artifact_id=f"artifact-{scenario_name}-{run_label}-{suffix}",
-                    display_name=f"Replay Access Review {suffix}",
+                    run_label=run_label,
+                    suffix=suffix,
                 ),
             )
             if accepted.accepted_count == 0:
@@ -238,6 +394,9 @@ class AuditFlowReplayHarness:
 
             return ReplayScenarioExecution(
                 scenario_name=scenario_name,
+                scenario_title=scenario.title,
+                scenario_description=scenario.description,
+                source_format=scenario.source_format,
                 workspace_id=workspace.workspace_id,
                 cycle_id=cycle.cycle_id,
                 package_id=export_package.package_id,
@@ -257,6 +416,37 @@ class AuditFlowReplayHarness:
         finally:
             if hasattr(service, "close"):
                 service.close()
+
+    @staticmethod
+    def _scenario_upload_command(
+        scenario: DemoReplayScenario,
+        *,
+        workflow_run_id: str,
+        run_label: str,
+        suffix: str,
+    ) -> dict[str, Any]:
+        command = upload_import_command(
+            workflow_run_id=workflow_run_id,
+            artifact_id=f"artifact-{scenario.scenario_name}-{run_label}-{suffix}",
+            display_name=scenario.title,
+        )
+        command.update(scenario.upload_overrides)
+        command["workflow_run_id"] = workflow_run_id
+        command["artifact_id"] = f"artifact-{scenario.scenario_name}-{run_label}-{suffix}"
+        return command
+
+    @staticmethod
+    def _resolve_demo_scenario_names(scenario_names: list[str] | None) -> list[str]:
+        if scenario_names is None:
+            return [scenario.scenario_name for scenario in DEMO_REPLAY_SCENARIOS]
+        return scenario_names
+
+    @staticmethod
+    def _lookup_demo_scenario(scenario_name: str) -> DemoReplayScenario:
+        for scenario in DEMO_REPLAY_SCENARIOS:
+            if scenario.scenario_name == scenario_name:
+                return scenario
+        raise KeyError(f"Unknown replay scenario: {scenario_name}")
 
     @staticmethod
     def _capture_workflow_summary(service, *, workflow_name: str, workflow_run_id: str) -> ReplayWorkflowSummary:
@@ -443,6 +633,9 @@ class AuditFlowReplayHarness:
             f"# Replay Report {evaluation.report_id}",
             "",
             f"- Scenario: `{evaluation.scenario_name}`",
+            f"- Title: {evaluation.scenario_title or evaluation.scenario_name}",
+            f"- Source format: `{evaluation.source_format or 'unknown'}`",
+            f"- Description: {evaluation.scenario_description or 'n/a'}",
             f"- Baseline: `{evaluation.baseline_id}`",
             f"- Status: `{evaluation.status}`",
             f"- Score: `{evaluation.score}`",

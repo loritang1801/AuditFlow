@@ -17,6 +17,16 @@ from auditflow_app.replay_harness import load_replay_baseline
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the AuditFlow replay harness.")
     parser.add_argument(
+        "--list-scenarios",
+        action="store_true",
+        help="List built-in replay scenarios and exit.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Run all built-in replay scenarios instead of a single scenario.",
+    )
+    parser.add_argument(
         "--scenario-name",
         default="demo_cycle_export",
         help="Scenario name to capture when no baseline file is provided.",
@@ -52,19 +62,31 @@ def main() -> None:
         baseline_root=args.baseline_root,
         report_root=args.report_root,
     )
-    if args.baseline:
-        baseline = load_replay_baseline(args.baseline)
-    else:
-        baseline = harness.capture_demo_baseline(scenario_name=args.scenario_name)
-    if args.capture_only:
-        print(json.dumps({"baseline": baseline.model_dump(mode="json")}, indent=2))
+    if args.list_scenarios:
+        print(
+            json.dumps(
+                {"scenarios": [item.model_dump(mode="json") for item in harness.list_demo_scenarios()]},
+                indent=2,
+            )
+        )
         return
-    report = harness.evaluate_demo_scenario(baseline)
+    if args.baseline and args.all:
+        raise ValueError("--baseline cannot be combined with --all")
+    if args.baseline:
+        baselines = [load_replay_baseline(args.baseline)]
+    elif args.all:
+        baselines = harness.capture_demo_baselines()
+    else:
+        baselines = [harness.capture_demo_baseline(scenario_name=args.scenario_name)]
+    if args.capture_only:
+        print(json.dumps({"baselines": [baseline.model_dump(mode="json") for baseline in baselines]}, indent=2))
+        return
+    reports = harness.evaluate_demo_suite(baselines)
     print(
         json.dumps(
             {
-                "baseline": baseline.model_dump(mode="json"),
-                "report": report.model_dump(mode="json"),
+                "baselines": [baseline.model_dump(mode="json") for baseline in baselines],
+                "reports": [report.model_dump(mode="json") for report in reports],
             },
             indent=2,
         )
