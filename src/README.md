@@ -6,7 +6,7 @@ Current implementation includes:
 
 - `bootstrap.py`: shared-runtime wiring and app/worker factories
 - `service.py`: domain-facing application service
-- `service.py`: domain-facing application service plus multi-format import normalization, including PDF/image binary heuristics
+- `service.py`: domain-facing application service plus multi-format import normalization, including PDF/image/DOCX/XLSX/ZIP binary heuristics
 - `repository.py`: SQLAlchemy-backed product repository
 - `routes.py`: FastAPI route layer and shared response envelopes
 - `worker.py`: import outbox dispatcher and connector-specific handlers

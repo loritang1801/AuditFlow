@@ -5,6 +5,7 @@ import binascii
 import csv
 import hashlib
 import html
+import io
 import json
 import re
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from datetime import UTC, datetime
 from io import StringIO
 from typing import Any, TypeVar
 from uuid import uuid4
+import xml.etree.ElementTree as ET
+import zipfile
 
 from .api_models import (
     AuditCycleSummary,
@@ -927,6 +930,21 @@ class AuditFlowAppService:
                 display_name=display_name,
                 artifact_bytes=artifact_bytes or b"",
             )
+        elif artifact_format == "docx":
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_docx_artifact(
+                display_name=display_name,
+                artifact_bytes=artifact_bytes or b"",
+            )
+        elif artifact_format == "xlsx":
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_xlsx_artifact(
+                display_name=display_name,
+                artifact_bytes=artifact_bytes or b"",
+            )
+        elif artifact_format == "zip":
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_zip_artifact(
+                display_name=display_name,
+                artifact_bytes=artifact_bytes or b"",
+            )
         elif artifact_format in {"png", "jpeg", "jpg", "image"}:
             normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_image_artifact(
                 display_name=display_name,
@@ -994,6 +1012,9 @@ class AuditFlowAppService:
         source_locator: str | None,
         artifact_bytes: bytes,
     ) -> str:
+        openxml_format = AuditFlowAppService._detect_openxml_artifact_format(artifact_bytes)
+        if openxml_format is not None:
+            return openxml_format
         locator_candidates = [
             value.split("?", maxsplit=1)[0].lower()
             for value in (source_locator, artifact_id)
@@ -1001,13 +1022,34 @@ class AuditFlowAppService:
         ]
         if any(candidate.endswith(".pdf") for candidate in locator_candidates) or artifact_bytes.startswith(b"%PDF-"):
             return "pdf"
+        if any(candidate.endswith(".docx") for candidate in locator_candidates):
+            return "docx"
+        if any(candidate.endswith(".xlsx") for candidate in locator_candidates):
+            return "xlsx"
+        if any(candidate.endswith(".zip") for candidate in locator_candidates):
+            return "zip"
         if any(candidate.endswith(".png") for candidate in locator_candidates) or artifact_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
             return "png"
         if any(candidate.endswith((".jpg", ".jpeg")) for candidate in locator_candidates) or artifact_bytes.startswith(b"\xff\xd8"):
             return "jpeg"
         if any(candidate.endswith((".gif", ".bmp", ".webp")) for candidate in locator_candidates):
             return "image"
+        if zipfile.is_zipfile(io.BytesIO(artifact_bytes)):
+            return "zip"
         return "binary"
+
+    @staticmethod
+    def _detect_openxml_artifact_format(artifact_bytes: bytes) -> str | None:
+        try:
+            with zipfile.ZipFile(io.BytesIO(artifact_bytes)) as archive:
+                names = set(archive.namelist())
+        except zipfile.BadZipFile:
+            return None
+        if "word/document.xml" in names:
+            return "docx"
+        if any(name.startswith("xl/worksheets/") and name.endswith(".xml") for name in names):
+            return "xlsx"
+        return None
 
     @staticmethod
     def _decode_artifact_bytes(value: str) -> bytes:
@@ -1222,6 +1264,101 @@ class AuditFlowAppService:
         return f"PDF import: {display_name}\n\n{normalized_text}", chunk_texts, parser_metadata
 
     @staticmethod
+    def _parse_docx_artifact(
+        *,
+        display_name: str,
+        artifact_bytes: bytes,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        paragraphs = AuditFlowAppService._extract_docx_paragraphs(artifact_bytes)
+        extracted_text = "\n\n".join(paragraphs).strip()
+        if not extracted_text:
+            extracted_text = (
+                f"{display_name}\n"
+                "DOCX document imported, but no extractable text was found. Manual reviewer follow-up is required."
+            )
+        normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
+            source_type="upload",
+            display_name=display_name,
+            raw_text=extracted_text,
+        )
+        parser_metadata.update(
+            {
+                "source_format": "docx",
+                "parser_kind": "docx_xml_extract",
+                "byte_size": len(artifact_bytes),
+                "extraction_method": "openxml_document_extract",
+                "section_count": len(paragraphs) if paragraphs else 1,
+            }
+        )
+        return f"DOCX import: {display_name}\n\n{normalized_text}", chunk_texts, parser_metadata
+
+    @staticmethod
+    def _parse_xlsx_artifact(
+        *,
+        display_name: str,
+        artifact_bytes: bytes,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        worksheet_chunks = AuditFlowAppService._extract_xlsx_rows(artifact_bytes)
+        extracted_text = "\n\n".join(worksheet_chunks).strip()
+        if not extracted_text:
+            extracted_text = (
+                f"{display_name}\n"
+                "XLSX workbook imported, but no extractable cell text was found. Manual reviewer follow-up is required."
+            )
+        normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
+            source_type="upload",
+            display_name=display_name,
+            raw_text=extracted_text,
+        )
+        parser_metadata.update(
+            {
+                "source_format": "xlsx",
+                "parser_kind": "xlsx_xml_extract",
+                "byte_size": len(artifact_bytes),
+                "extraction_method": "openxml_spreadsheet_extract",
+                "worksheet_count": len(
+                    {
+                        chunk.split("\n", maxsplit=1)[0].split(" row ", maxsplit=1)[0]
+                        for chunk in worksheet_chunks
+                    }
+                )
+                if worksheet_chunks
+                else 1,
+                "row_count": len(worksheet_chunks) if worksheet_chunks else 1,
+            }
+        )
+        return f"XLSX import: {display_name}\n\n{normalized_text}", chunk_texts, parser_metadata
+
+    @staticmethod
+    def _parse_zip_artifact(
+        *,
+        display_name: str,
+        artifact_bytes: bytes,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        entry_sections = AuditFlowAppService._extract_zip_entry_sections(artifact_bytes)
+        extracted_text = "\n\n".join(entry_sections).strip()
+        if not extracted_text:
+            extracted_text = (
+                f"{display_name}\n"
+                "ZIP archive imported, but no extractable text entries were found. Manual reviewer follow-up is required."
+            )
+        normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
+            source_type="upload",
+            display_name=display_name,
+            raw_text=extracted_text,
+        )
+        parser_metadata.update(
+            {
+                "source_format": "zip",
+                "parser_kind": "zip_entry_extract",
+                "byte_size": len(artifact_bytes),
+                "extraction_method": "archive_entry_text_extract",
+                "entry_count": len(entry_sections) if entry_sections else 1,
+            }
+        )
+        return f"ZIP import: {display_name}\n\n{normalized_text}", chunk_texts, parser_metadata
+
+    @staticmethod
     def _parse_image_artifact(
         *,
         display_name: str,
@@ -1414,3 +1551,166 @@ class AuditFlowAppService:
             deduped.append(normalized)
             seen.add(key)
         return deduped
+
+    @staticmethod
+    def _extract_docx_paragraphs(artifact_bytes: bytes) -> list[str]:
+        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        try:
+            with zipfile.ZipFile(io.BytesIO(artifact_bytes)) as archive:
+                entries = [
+                    name
+                    for name in archive.namelist()
+                    if name.startswith("word/") and name.endswith(".xml")
+                ]
+                paragraphs: list[str] = []
+                for entry in sorted(entries):
+                    if not any(token in entry for token in ("document.xml", "header", "footer")):
+                        continue
+                    root = ET.fromstring(archive.read(entry))
+                    for paragraph in root.findall(".//w:p", ns):
+                        fragments = [
+                            fragment.text.strip()
+                            for fragment in paragraph.findall(".//w:t", ns)
+                            if fragment.text and fragment.text.strip()
+                        ]
+                        if fragments:
+                            paragraphs.append("".join(fragments))
+        except (zipfile.BadZipFile, KeyError, ET.ParseError):
+            return AuditFlowAppService._extract_binary_text_candidates(artifact_bytes)
+        return AuditFlowAppService._dedupe_text_sections(paragraphs)
+
+    @staticmethod
+    def _extract_xlsx_rows(artifact_bytes: bytes) -> list[str]:
+        ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        try:
+            with zipfile.ZipFile(io.BytesIO(artifact_bytes)) as archive:
+                shared_strings = AuditFlowAppService._extract_xlsx_shared_strings(archive)
+                sheet_entries = [
+                    name
+                    for name in archive.namelist()
+                    if name.startswith("xl/worksheets/") and name.endswith(".xml")
+                ]
+                row_chunks: list[str] = []
+                for entry in sorted(sheet_entries):
+                    sheet_name = entry.rsplit("/", maxsplit=1)[-1].removesuffix(".xml")
+                    root = ET.fromstring(archive.read(entry))
+                    for row in root.findall(".//x:sheetData/x:row", ns):
+                        row_number = row.attrib.get("r", "?")
+                        cell_lines: list[str] = []
+                        for cell in row.findall("x:c", ns):
+                            cell_ref = cell.attrib.get("r", "")
+                            cell_value = AuditFlowAppService._extract_xlsx_cell_value(
+                                cell,
+                                shared_strings=shared_strings,
+                            )
+                            if cell_value:
+                                cell_lines.append(f"{cell_ref}: {cell_value}")
+                        if cell_lines:
+                            row_chunks.append(f"{sheet_name} row {row_number}\n" + "\n".join(cell_lines))
+        except (zipfile.BadZipFile, KeyError, ET.ParseError, ValueError):
+            return AuditFlowAppService._extract_binary_text_candidates(artifact_bytes)
+        return AuditFlowAppService._dedupe_text_sections(row_chunks)
+
+    @staticmethod
+    def _extract_xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
+        ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        if "xl/sharedStrings.xml" not in archive.namelist():
+            return []
+        root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+        shared_strings: list[str] = []
+        for item in root.findall(".//x:si", ns):
+            fragments = [
+                fragment.text.strip()
+                for fragment in item.findall(".//x:t", ns)
+                if fragment.text and fragment.text.strip()
+            ]
+            shared_strings.append("".join(fragments))
+        return shared_strings
+
+    @staticmethod
+    def _extract_xlsx_cell_value(cell: ET.Element, *, shared_strings: list[str]) -> str:
+        ns = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        cell_type = cell.attrib.get("t")
+        if cell_type == "inlineStr":
+            fragments = [
+                fragment.text.strip()
+                for fragment in cell.findall(".//x:t", ns)
+                if fragment.text and fragment.text.strip()
+            ]
+            return "".join(fragments)
+        value_node = cell.find("x:v", ns)
+        value = value_node.text.strip() if value_node is not None and value_node.text is not None else ""
+        if not value:
+            return ""
+        if cell_type == "s":
+            index = int(value)
+            return shared_strings[index] if 0 <= index < len(shared_strings) else value
+        return value
+
+    @staticmethod
+    def _extract_zip_entry_sections(artifact_bytes: bytes) -> list[str]:
+        try:
+            with zipfile.ZipFile(io.BytesIO(artifact_bytes)) as archive:
+                entry_sections: list[str] = []
+                for entry in sorted(archive.namelist()):
+                    if entry.endswith("/"):
+                        continue
+                    if not AuditFlowAppService._is_textual_archive_entry(entry):
+                        continue
+                    raw_entry_bytes = archive.read(entry)
+                    entry_text = raw_entry_bytes.decode("utf-8", errors="ignore").strip()
+                    if not entry_text:
+                        continue
+                    artifact_format = AuditFlowAppService._detect_artifact_format(
+                        artifact_id=entry,
+                        source_locator=entry,
+                        raw_text=entry_text,
+                    )
+                    if artifact_format == "csv":
+                        normalized_text, _chunk_texts, _metadata = AuditFlowAppService._parse_csv_artifact(
+                            display_name=entry,
+                            raw_text=entry_text,
+                        )
+                    elif artifact_format == "json":
+                        normalized_text, _chunk_texts, _metadata = AuditFlowAppService._parse_json_artifact(
+                            display_name=entry,
+                            raw_text=entry_text,
+                        )
+                    elif artifact_format == "markdown":
+                        normalized_text, _chunk_texts, _metadata = AuditFlowAppService._parse_markdown_artifact(
+                            display_name=entry,
+                            raw_text=entry_text,
+                        )
+                    elif artifact_format == "html":
+                        normalized_text, _chunk_texts, _metadata = AuditFlowAppService._parse_html_artifact(
+                            display_name=entry,
+                            raw_text=entry_text,
+                        )
+                    else:
+                        normalized_text, _chunk_texts, _metadata = AuditFlowAppService._parse_text_artifact(
+                            source_type="upload",
+                            display_name=entry,
+                            raw_text=entry_text,
+                        )
+                    entry_sections.append(f"{entry}\n{normalized_text}".strip())
+        except (zipfile.BadZipFile, KeyError, ET.ParseError):
+            return AuditFlowAppService._extract_binary_text_candidates(artifact_bytes)
+        return AuditFlowAppService._dedupe_text_sections(entry_sections)
+
+    @staticmethod
+    def _is_textual_archive_entry(entry_name: str) -> bool:
+        normalized = entry_name.lower()
+        return normalized.endswith(
+            (
+                ".txt",
+                ".md",
+                ".markdown",
+                ".json",
+                ".csv",
+                ".html",
+                ".htm",
+                ".log",
+                ".yaml",
+                ".yml",
+            )
+        )

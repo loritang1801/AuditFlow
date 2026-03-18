@@ -127,6 +127,15 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
         self.assertEqual(status_code, 409)
         self.assertEqual(payload["error"]["code"], "IDEMPOTENCY_CONFLICT")
 
+    def test_maps_invalid_artifact_bytes_to_400(self) -> None:
+        status_code, payload = map_domain_error(
+            ValueError("INVALID_ARTIFACT_BYTES"),
+            path="/api/v1/auditflow/cycles/cycle-1/imports/upload",
+        )
+
+        self.assertEqual(status_code, 400)
+        self.assertEqual(payload["error"]["code"], "INVALID_ARTIFACT_BYTES")
+
     def test_resolves_sse_event_context_from_runtime_state(self) -> None:
         state_store = SimpleNamespace(
             load=lambda workflow_run_id: SimpleNamespace(

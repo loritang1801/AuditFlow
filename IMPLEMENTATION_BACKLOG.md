@@ -42,11 +42,11 @@ Implemented:
 4. Duplicate upload and connector sources now collapse at import acceptance time via source fingerprints and stable source keys.
 5. Import processing now persists raw/normalized artifact text blobs and multi-chunk evidence rows for downstream review.
 6. Upload imports now apply format-aware CSV/JSON/Markdown/HTML/text normalization before chunk materialization.
-7. Upload imports now also accept base64-backed PDF/image payloads and apply heuristic text extraction with binary parser metadata.
+7. Upload imports now also accept base64-backed PDF/image/DOCX/XLSX/ZIP payloads and apply heuristic text extraction with binary parser metadata.
 
 Missing or partial:
 
-1. Binary parsing still lacks richer DOCX/XLSX coverage and production-grade OCR.
+1. Binary parsing still lacks production-grade OCR plus broader DOC/XLS/PPT/archive coverage beyond the current heuristic ZIP/OpenXML support.
 2. No embedding/index persistence path yet.
 3. External connectors still use synthetic payload capture rather than live pulls.
 

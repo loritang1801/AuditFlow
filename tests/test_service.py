@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import shutil
 import sys
@@ -8,6 +9,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+import zipfile
 
 from sqlalchemy import select
 
@@ -53,6 +55,63 @@ def _png_with_text(text: str) -> bytes:
         + b"\x00\x00\x00\x00"
         + b"\x00\x00\x00\x00IEND\x00\x00\x00\x00"
     )
+
+
+def _docx_with_paragraphs(paragraphs: list[str]) -> bytes:
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        + "".join(
+            f"<w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p>"
+            for paragraph in paragraphs
+        )
+        + "</w:body></w:document>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w") as archive:
+        archive.writestr("word/document.xml", document_xml)
+    return buffer.getvalue()
+
+
+def _xlsx_with_rows(rows: list[list[str]]) -> bytes:
+    shared_strings = [value for row in rows for value in row]
+    shared_strings_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        + "".join(f"<si><t>{value}</t></si>" for value in shared_strings)
+        + "</sst>"
+    )
+    shared_index = 0
+    sheet_rows: list[str] = []
+    for row_number, row in enumerate(rows, start=1):
+        cell_entries: list[str] = []
+        for column_index, value in enumerate(row, start=1):
+            column_letter = chr(ord("A") + column_index - 1)
+            cell_entries.append(
+                f'<c r="{column_letter}{row_number}" t="s"><v>{shared_index}</v></c>'
+            )
+            shared_index += 1
+        sheet_rows.append(f'<row r="{row_number}">{"".join(cell_entries)}</row>')
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f"<sheetData>{''.join(sheet_rows)}</sheetData>"
+        "</worksheet>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w") as archive:
+        archive.writestr("xl/sharedStrings.xml", shared_strings_xml)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+    return buffer.getvalue()
+
+
+def _zip_with_entries(entries: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w") as archive:
+        for entry_name, content in entries.items():
+            archive.writestr(entry_name, content)
+    return buffer.getvalue()
 
 
 def _create_repo_tempdir(prefix: str) -> Path:
@@ -801,6 +860,120 @@ class AuditFlowServiceTests(unittest.TestCase):
 
         evidence = service.get_evidence(evidence_row.evidence_id)
         self.assertIn("Security Engineering", evidence.summary)
+
+    def test_docx_upload_import_extracts_text_from_binary_payload(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        docx_bytes = _docx_with_paragraphs(
+            [
+                "Access Review Notes",
+                "Reviewer: Security Engineering",
+                "All privileged assignments approved.",
+            ]
+        )
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-docx-1",
+                display_name="Access Review DOCX",
+                artifact_text=None,
+                artifact_bytes_base64=base64.b64encode(docx_bytes).decode("ascii"),
+            )
+            | {"source_locator": "uploads/access-review.docx"},
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-docx-1-normalized")
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-docx-1")
+            ).first()
+
+        self.assertIsNotNone(normalized_row)
+        self.assertEqual(normalized_row.metadata_payload["parser_kind"], "docx_xml_extract")
+        self.assertEqual(normalized_row.metadata_payload["source_format"], "docx")
+        self.assertIn("Access Review Notes", normalized_row.content_text)
+        self.assertIn("Security Engineering", normalized_row.content_text)
+
+        evidence = service.get_evidence(evidence_row.evidence_id)
+        self.assertIn("Access Review Notes", evidence.summary)
+
+    def test_xlsx_upload_import_extracts_rows_from_binary_payload(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        xlsx_bytes = _xlsx_with_rows(
+            [
+                ["reviewer", "system", "status"],
+                ["Security Engineering", "break-glass", "approved"],
+            ]
+        )
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-xlsx-1",
+                display_name="Access Review XLSX",
+                artifact_text=None,
+                artifact_bytes_base64=base64.b64encode(xlsx_bytes).decode("ascii"),
+            )
+            | {"source_locator": "uploads/access-review.xlsx"},
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-xlsx-1-normalized")
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-xlsx-1")
+            ).first()
+
+        self.assertIsNotNone(normalized_row)
+        self.assertEqual(normalized_row.metadata_payload["parser_kind"], "xlsx_xml_extract")
+        self.assertEqual(normalized_row.metadata_payload["source_format"], "xlsx")
+        self.assertEqual(normalized_row.metadata_payload["row_count"], 2)
+        self.assertIn("sheet1 row 1", normalized_row.content_text)
+        self.assertIn("A2: Security Engineering", normalized_row.content_text)
+
+        evidence = service.get_evidence(evidence_row.evidence_id)
+        self.assertIn("sheet1 row 1", evidence.summary)
+
+    def test_zip_upload_import_extracts_textual_entries_from_binary_payload(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        zip_bytes = _zip_with_entries(
+            {
+                "reviews/access-review.csv": "reviewer,system,status\nSecurity Engineering,break-glass,approved\n",
+                "notes/findings.md": "# Findings\n\n- Two stale contractor accounts were removed.\n",
+            }
+        )
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-zip-1",
+                display_name="Access Review ZIP",
+                artifact_text=None,
+                artifact_bytes_base64=base64.b64encode(zip_bytes).decode("ascii"),
+            )
+            | {"source_locator": "uploads/access-review.zip"},
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-zip-1-normalized")
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-zip-1")
+            ).first()
+
+        self.assertIsNotNone(normalized_row)
+        self.assertEqual(normalized_row.metadata_payload["parser_kind"], "zip_entry_extract")
+        self.assertEqual(normalized_row.metadata_payload["source_format"], "zip")
+        self.assertIn("reviews/access-review.csv", normalized_row.content_text)
+        self.assertIn("Security Engineering", normalized_row.content_text)
+        self.assertIn("notes/findings.md", normalized_row.content_text)
+
+        evidence = service.get_evidence(evidence_row.evidence_id)
+        self.assertIn("reviews/access-review.csv", evidence.summary)
 
     def test_mapping_and_gap_reviews_append_review_decision_audit_rows(self) -> None:
         service = build_app_service()
