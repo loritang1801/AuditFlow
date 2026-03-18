@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import sys
@@ -38,6 +39,20 @@ from auditflow_app.sample_payloads import (
 )
 
 EXPECTED_SOC2_CONTROL_CODES = ["CC6.1", "CC6.2", "CC7.2", "CC8.1"]
+
+
+def _png_with_text(text: str) -> bytes:
+    text_bytes = text.encode("utf-8")
+    text_chunk = len(b"Comment\x00" + text_bytes).to_bytes(4, byteorder="big")
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + text_chunk
+        + b"tEXt"
+        + b"Comment\x00"
+        + text_bytes
+        + b"\x00\x00\x00\x00"
+        + b"\x00\x00\x00\x00IEND\x00\x00\x00\x00"
+    )
 
 
 def _create_repo_tempdir(prefix: str) -> Path:
@@ -710,6 +725,82 @@ class AuditFlowServiceTests(unittest.TestCase):
 
         evidence = service.get_evidence(evidence_row.evidence_id)
         self.assertGreaterEqual(len(evidence.chunks), 1)
+
+    def test_pdf_upload_import_extracts_text_from_binary_payload(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        pdf_bytes = (
+            b"%PDF-1.4\n"
+            b"1 0 obj\n<< /Type /Catalog >>\nendobj\n"
+            b"2 0 obj\n<< /Length 98 >>\nstream\n"
+            b"BT /F1 12 Tf 72 720 Td "
+            b"(Access Review Report) Tj "
+            b"(Reviewer: Security Engineering) Tj "
+            b"(All privileged assignments approved.) Tj "
+            b"ET\nendstream\nendobj\n"
+        )
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-pdf-1",
+                display_name="Access Review PDF",
+                artifact_text=None,
+                artifact_bytes_base64=base64.b64encode(pdf_bytes).decode("ascii"),
+            )
+            | {"source_locator": "uploads/access-review.pdf"},
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-pdf-1-normalized")
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-pdf-1")
+            ).first()
+
+        self.assertIsNotNone(normalized_row)
+        self.assertEqual(normalized_row.metadata_payload["parser_kind"], "pdf_text_extract")
+        self.assertEqual(normalized_row.metadata_payload["source_format"], "pdf")
+        self.assertIn("Access Review Report", normalized_row.content_text)
+        self.assertIn("Security Engineering", normalized_row.content_text)
+
+        evidence = service.get_evidence(evidence_row.evidence_id)
+        self.assertIn("Access Review Report", evidence.summary)
+
+    def test_png_upload_import_extracts_text_from_binary_payload(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        png_bytes = _png_with_text(
+            "Reviewer: Security Engineering; Break-glass access reviewed; All actions completed."
+        )
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-upload-png-1",
+                display_name="Access Review Screenshot",
+                artifact_text=None,
+                artifact_bytes_base64=base64.b64encode(png_bytes).decode("ascii"),
+            )
+            | {"source_locator": "uploads/access-review.png"},
+        )
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            normalized_row = session.get(ArtifactBlobRow, "artifact-upload-png-1-normalized")
+            evidence_row = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.source_artifact_id == "artifact-upload-png-1")
+            ).first()
+
+        self.assertIsNotNone(normalized_row)
+        self.assertEqual(normalized_row.metadata_payload["parser_kind"], "image_ocr_heuristic")
+        self.assertEqual(normalized_row.metadata_payload["source_format"], "png")
+        self.assertTrue(normalized_row.metadata_payload["ocr_used"])
+        self.assertIn("Security Engineering", normalized_row.content_text)
+        self.assertIn("Break-glass access reviewed", normalized_row.content_text)
+
+        evidence = service.get_evidence(evidence_row.evidence_id)
+        self.assertIn("Security Engineering", evidence.summary)
 
     def test_mapping_and_gap_reviews_append_review_decision_audit_rows(self) -> None:
         service = build_app_service()

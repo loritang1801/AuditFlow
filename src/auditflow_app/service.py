@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import csv
 import hashlib
 import html
@@ -295,6 +297,7 @@ class AuditFlowAppService:
                 source_locator=command.source_locator,
                 captured_at=command.captured_at,
                 artifact_text=command.artifact_text,
+                artifact_bytes_base64=command.artifact_bytes_base64,
                 organization_id=command.organization_id,
                 workspace_id=command.workspace_id,
             )
@@ -360,6 +363,7 @@ class AuditFlowAppService:
                 source_locator=selector if command.query is None else f"{command.provider}:query",
                 captured_at=None,
                 artifact_text=None,
+                artifact_bytes_base64=None,
                 organization_id=command.organization_id,
                 workspace_id=command.workspace_id,
             )
@@ -726,6 +730,7 @@ class AuditFlowAppService:
         source_locator: str | None,
         captured_at,
         artifact_text: str | None,
+        artifact_bytes_base64: str | None,
         organization_id: str,
         workspace_id: str,
     ) -> None:
@@ -748,6 +753,7 @@ class AuditFlowAppService:
                     "evidence_type": evidence_type,
                     "source_locator": source_locator,
                     "artifact_text": artifact_text,
+                    "artifact_bytes_base64": artifact_bytes_base64,
                     "captured_at": (
                         captured_at.isoformat() if hasattr(captured_at, "isoformat") and captured_at is not None else None
                     ),
@@ -772,6 +778,9 @@ class AuditFlowAppService:
             artifact_id=(str(artifact_id) if artifact_id is not None else f"artifact-{payload['evidence_source_id']}"),
             source_locator=(str(source_locator) if source_locator is not None else None),
             artifact_text=(str(payload["artifact_text"]) if payload.get("artifact_text") is not None else None),
+            artifact_bytes_base64=(
+                str(payload["artifact_bytes_base64"]) if payload.get("artifact_bytes_base64") is not None else None
+            ),
         )
         self.repository.upsert_artifact_blob(
             artifact_id=parsed_artifact.raw_artifact_id,
@@ -869,13 +878,30 @@ class AuditFlowAppService:
         artifact_id: str,
         source_locator: str | None,
         artifact_text: str | None,
+        artifact_bytes_base64: str | None = None,
     ) -> ParsedImportArtifact:
-        raw_text = (artifact_text or f"{display_name}\n\nSource: {source_locator or source_type}").strip()
-        artifact_format = AuditFlowAppService._detect_artifact_format(
-            artifact_id=artifact_id,
-            source_locator=source_locator,
-            raw_text=raw_text,
-        )
+        artifact_bytes = None
+        if artifact_bytes_base64 is not None:
+            artifact_bytes = AuditFlowAppService._decode_artifact_bytes(artifact_bytes_base64)
+            artifact_format = AuditFlowAppService._detect_binary_artifact_format(
+                artifact_id=artifact_id,
+                source_locator=source_locator,
+                artifact_bytes=artifact_bytes,
+            )
+            raw_text = AuditFlowAppService._build_binary_raw_text(
+                display_name=display_name,
+                source_type=source_type,
+                source_locator=source_locator,
+                artifact_format=artifact_format,
+                artifact_bytes=artifact_bytes,
+            )
+        else:
+            raw_text = (artifact_text or f"{display_name}\n\nSource: {source_locator or source_type}").strip()
+            artifact_format = AuditFlowAppService._detect_artifact_format(
+                artifact_id=artifact_id,
+                source_locator=source_locator,
+                raw_text=raw_text,
+            )
         if artifact_format == "csv":
             normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_csv_artifact(
                 display_name=display_name,
@@ -896,13 +922,29 @@ class AuditFlowAppService:
                 display_name=display_name,
                 raw_text=raw_text,
             )
+        elif artifact_format == "pdf":
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_pdf_artifact(
+                display_name=display_name,
+                artifact_bytes=artifact_bytes or b"",
+            )
+        elif artifact_format in {"png", "jpeg", "jpg", "image"}:
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_image_artifact(
+                display_name=display_name,
+                artifact_format=artifact_format,
+                artifact_bytes=artifact_bytes or b"",
+            )
+        elif artifact_format == "binary":
+            normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_binary_artifact(
+                display_name=display_name,
+                artifact_bytes=artifact_bytes or b"",
+            )
         else:
             normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
                 source_type=source_type,
                 display_name=display_name,
                 raw_text=raw_text,
             )
-        parser_kind = str(parser_metadata.get("source_format", artifact_format))
+        parser_kind = str(parser_metadata.get("parser_kind", parser_metadata.get("source_format", artifact_format)))
         summary = AuditFlowAppService._build_artifact_summary(chunk_texts[0] if chunk_texts else raw_text)
         if len(summary) > 180:
             summary = f"{summary[:177]}..."
@@ -944,6 +986,56 @@ class AuditFlowAppService:
         if re.search(r"(?is)<(html|body|section|article|div|p|table|h1|h2)\b", stripped):
             return "html"
         return "text"
+
+    @staticmethod
+    def _detect_binary_artifact_format(
+        *,
+        artifact_id: str,
+        source_locator: str | None,
+        artifact_bytes: bytes,
+    ) -> str:
+        locator_candidates = [
+            value.split("?", maxsplit=1)[0].lower()
+            for value in (source_locator, artifact_id)
+            if value is not None
+        ]
+        if any(candidate.endswith(".pdf") for candidate in locator_candidates) or artifact_bytes.startswith(b"%PDF-"):
+            return "pdf"
+        if any(candidate.endswith(".png") for candidate in locator_candidates) or artifact_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if any(candidate.endswith((".jpg", ".jpeg")) for candidate in locator_candidates) or artifact_bytes.startswith(b"\xff\xd8"):
+            return "jpeg"
+        if any(candidate.endswith((".gif", ".bmp", ".webp")) for candidate in locator_candidates):
+            return "image"
+        return "binary"
+
+    @staticmethod
+    def _decode_artifact_bytes(value: str) -> bytes:
+        encoded = value.strip()
+        if encoded.startswith("data:"):
+            _, _, encoded = encoded.partition(",")
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except binascii.Error as exc:
+            raise ValueError("INVALID_ARTIFACT_BYTES") from exc
+
+    @staticmethod
+    def _build_binary_raw_text(
+        *,
+        display_name: str,
+        source_type: str,
+        source_locator: str | None,
+        artifact_format: str,
+        artifact_bytes: bytes,
+    ) -> str:
+        return "\n".join(
+            [
+                f"Binary import: {display_name}",
+                f"Source: {source_locator or source_type}",
+                f"Detected format: {artifact_format}",
+                f"Byte size: {len(artifact_bytes)}",
+            ]
+        ).strip()
 
     @staticmethod
     def _parse_csv_artifact(
@@ -1100,6 +1192,100 @@ class AuditFlowAppService:
         return normalized_text, chunk_texts, parser_metadata
 
     @staticmethod
+    def _parse_pdf_artifact(
+        *,
+        display_name: str,
+        artifact_bytes: bytes,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        extracted_sections = AuditFlowAppService._extract_pdf_text_candidates(artifact_bytes)
+        extracted_text = "\n\n".join(extracted_sections).strip()
+        if not extracted_text:
+            extracted_text = (
+                f"{display_name}\n"
+                "PDF document imported, but no extractable text was found. Manual reviewer follow-up is required."
+            )
+        normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
+            source_type="upload",
+            display_name=display_name,
+            raw_text=extracted_text,
+        )
+        parser_metadata.update(
+            {
+                "source_format": "pdf",
+                "parser_kind": "pdf_text_extract",
+                "byte_size": len(artifact_bytes),
+                "extraction_method": "heuristic_pdf_text_extract",
+                "ocr_used": False,
+                "section_count": len(extracted_sections) if extracted_sections else 1,
+            }
+        )
+        return f"PDF import: {display_name}\n\n{normalized_text}", chunk_texts, parser_metadata
+
+    @staticmethod
+    def _parse_image_artifact(
+        *,
+        display_name: str,
+        artifact_format: str,
+        artifact_bytes: bytes,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        extracted_sections: list[str] = []
+        if artifact_format == "png":
+            extracted_sections.extend(AuditFlowAppService._extract_png_text_chunks(artifact_bytes))
+        extracted_sections.extend(AuditFlowAppService._extract_binary_text_candidates(artifact_bytes))
+        extracted_sections = AuditFlowAppService._dedupe_text_sections(extracted_sections)
+        extracted_text = "\n\n".join(extracted_sections).strip()
+        if not extracted_text:
+            extracted_text = (
+                f"{display_name}\n"
+                "Image evidence imported, but no OCR-like text could be recovered. Manual reviewer follow-up is required."
+            )
+        normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
+            source_type="upload",
+            display_name=display_name,
+            raw_text=extracted_text,
+        )
+        parser_metadata.update(
+            {
+                "source_format": artifact_format,
+                "parser_kind": "image_ocr_heuristic",
+                "byte_size": len(artifact_bytes),
+                "extraction_method": "metadata_and_printable_text_heuristic",
+                "ocr_used": bool(extracted_sections),
+                "section_count": len(extracted_sections) if extracted_sections else 1,
+            }
+        )
+        return f"Image import: {display_name}\n\n{normalized_text}", chunk_texts, parser_metadata
+
+    @staticmethod
+    def _parse_binary_artifact(
+        *,
+        display_name: str,
+        artifact_bytes: bytes,
+    ) -> tuple[str, list[str], dict[str, object]]:
+        extracted_sections = AuditFlowAppService._extract_binary_text_candidates(artifact_bytes)
+        extracted_text = "\n\n".join(extracted_sections).strip()
+        if not extracted_text:
+            extracted_text = (
+                f"{display_name}\n"
+                "Binary evidence imported without extractable text. Manual reviewer follow-up is required."
+            )
+        normalized_text, chunk_texts, parser_metadata = AuditFlowAppService._parse_text_artifact(
+            source_type="upload",
+            display_name=display_name,
+            raw_text=extracted_text,
+        )
+        parser_metadata.update(
+            {
+                "source_format": "binary",
+                "parser_kind": "binary_text_extract",
+                "byte_size": len(artifact_bytes),
+                "extraction_method": "printable_text_heuristic",
+                "section_count": len(extracted_sections) if extracted_sections else 1,
+            }
+        )
+        return f"Binary import: {display_name}\n\n{normalized_text}", chunk_texts, parser_metadata
+
+    @staticmethod
     def _parse_text_artifact(
         *,
         source_type: str,
@@ -1162,3 +1348,69 @@ class AuditFlowAppService:
     @staticmethod
     def _build_artifact_summary(chunk_text: str) -> str:
         return chunk_text.replace("\n", " ")
+
+    @staticmethod
+    def _extract_pdf_text_candidates(artifact_bytes: bytes) -> list[str]:
+        sections: list[str] = []
+        for match in re.findall(rb"\(([^()]*)\)", artifact_bytes):
+            decoded = match.decode("utf-8", errors="ignore").strip()
+            if decoded and len(decoded) >= 6:
+                sections.append(decoded)
+        if sections:
+            return AuditFlowAppService._dedupe_text_sections(sections)
+        return AuditFlowAppService._extract_binary_text_candidates(artifact_bytes)
+
+    @staticmethod
+    def _extract_png_text_chunks(artifact_bytes: bytes) -> list[str]:
+        if not artifact_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            return []
+        sections: list[str] = []
+        offset = 8
+        while offset + 8 <= len(artifact_bytes):
+            length = int.from_bytes(artifact_bytes[offset : offset + 4], byteorder="big")
+            chunk_type = artifact_bytes[offset + 4 : offset + 8]
+            data_start = offset + 8
+            data_end = data_start + length
+            crc_end = data_end + 4
+            if crc_end > len(artifact_bytes):
+                break
+            chunk_data = artifact_bytes[data_start:data_end]
+            if chunk_type == b"tEXt" and b"\x00" in chunk_data:
+                _keyword, text_data = chunk_data.split(b"\x00", maxsplit=1)
+                decoded = text_data.decode("utf-8", errors="ignore").strip()
+                if decoded:
+                    sections.append(decoded)
+            offset = crc_end
+            if chunk_type == b"IEND":
+                break
+        return sections
+
+    @staticmethod
+    def _extract_binary_text_candidates(artifact_bytes: bytes) -> list[str]:
+        decoded = artifact_bytes.decode("latin-1", errors="ignore")
+        matches = re.findall(r"[A-Za-z0-9][A-Za-z0-9 \t:/._#@(),'-]{5,}", decoded)
+        cleaned = [
+            re.sub(r"\s+", " ", match).strip()
+            for match in matches
+        ]
+        filtered = [
+            section
+            for section in cleaned
+            if len(section) >= 6 and not re.fullmatch(r"[A-Za-z0-9._/-]{1,8}", section)
+        ]
+        return AuditFlowAppService._dedupe_text_sections(filtered)
+
+    @staticmethod
+    def _dedupe_text_sections(sections: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for section in sections:
+            normalized = section.strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            deduped.append(normalized)
+            seen.add(key)
+        return deduped

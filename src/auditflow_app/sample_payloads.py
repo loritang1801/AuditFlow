@@ -109,6 +109,7 @@ def upload_import_command(
     artifact_id: str = "artifact-upload-1",
     display_name: str = "Quarterly Access Review Export",
     evidence_type_hint: str = "report",
+    artifact_bytes_base64: str | None = None,
     artifact_text: str | None = (
         "Quarterly Access Review Export\n\n"
         "Control owner: Security Engineering\n"
@@ -127,6 +128,7 @@ def upload_import_command(
         "evidence_type_hint": evidence_type_hint,
         "source_locator": "uploads/q1-access-review.csv",
         "artifact_text": artifact_text,
+        "artifact_bytes_base64": artifact_bytes_base64,
     }
 
 

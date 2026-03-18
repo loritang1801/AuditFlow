@@ -256,6 +256,7 @@ class UploadImportCommand(AuditFlowModel):
     evidence_type_hint: str | None = None
     source_locator: str | None = None
     artifact_text: str | None = None
+    artifact_bytes_base64: str | None = None
     organization_id: str = "org-1"
     workspace_id: str = "ws-1"
 
