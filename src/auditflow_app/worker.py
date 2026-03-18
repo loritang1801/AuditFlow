@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from time import sleep
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .shared_runtime import load_shared_agent_platform
 
@@ -29,6 +30,35 @@ class FilteredOutboxStore:
 
     def mark_failed(self, event_id: str, failure_message: str) -> None:
         self.store.mark_failed(event_id, failure_message)
+
+
+@dataclass(slots=True)
+class ImportWorkerHeartbeat:
+    iteration: int
+    status: str
+    attempted_count: int
+    dispatched_count: int
+    failed_count: int
+    idle_polls: int
+    consecutive_failures: int
+    emitted_at: datetime
+    error_message: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        timestamp = self.emitted_at
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        return {
+            "iteration": self.iteration,
+            "status": self.status,
+            "attempted_count": self.attempted_count,
+            "dispatched_count": self.dispatched_count,
+            "failed_count": self.failed_count,
+            "idle_polls": self.idle_polls,
+            "consecutive_failures": self.consecutive_failures,
+            "emitted_at": timestamp.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "error_message": self.error_message,
+        }
 
 
 class UploadImportHandler:
@@ -114,6 +144,133 @@ class ConfluenceImportHandler:
         return normalized
 
 
+class AuditFlowImportWorkerSupervisor:
+    def __init__(
+        self,
+        worker: "AuditFlowImportWorker",
+        *,
+        sleep_fn: Callable[[float], None] = sleep,
+        now_fn: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.worker = worker
+        self._sleep_fn = sleep_fn
+        self._now_fn = now_fn or worker.app_service._worker_now_utc
+
+    def run(
+        self,
+        *,
+        poll_interval_seconds: float = 1.0,
+        max_iterations: int | None = None,
+        max_idle_polls: int | None = None,
+        max_consecutive_failures: int = 3,
+        failure_backoff_seconds: float = 5.0,
+        heartbeat_every_iterations: int = 1,
+        heartbeat_callback: Callable[[ImportWorkerHeartbeat], None] | None = None,
+    ) -> list[ImportWorkerHeartbeat]:
+        if max_consecutive_failures < 1:
+            raise ValueError("max_consecutive_failures must be >= 1")
+        if heartbeat_every_iterations < 1:
+            raise ValueError("heartbeat_every_iterations must be >= 1")
+
+        heartbeats: list[ImportWorkerHeartbeat] = []
+        iteration = 0
+        idle_polls = 0
+        consecutive_failures = 0
+        normalized_max_idle_polls = None if max_idle_polls is not None and max_idle_polls <= 0 else max_idle_polls
+
+        while max_iterations is None or iteration < max_iterations:
+            iteration += 1
+            try:
+                result = self.worker.dispatch_once()
+            except Exception as exc:
+                consecutive_failures += 1
+                heartbeat = self._record_heartbeat(
+                    heartbeats,
+                    iteration=iteration,
+                    status=("retrying" if consecutive_failures < max_consecutive_failures else "failed"),
+                    attempted_count=0,
+                    dispatched_count=0,
+                    failed_count=1,
+                    idle_polls=idle_polls,
+                    consecutive_failures=consecutive_failures,
+                    error_message=str(exc),
+                    heartbeat_callback=heartbeat_callback,
+                )
+                if consecutive_failures >= max_consecutive_failures:
+                    raise
+                if failure_backoff_seconds > 0:
+                    self._sleep_fn(failure_backoff_seconds)
+                continue
+
+            consecutive_failures = 0
+            attempted_count = int(getattr(result, "attempted_count", 0))
+            dispatched_count = int(getattr(result, "dispatched_count", 0))
+            failed_count = int(getattr(result, "failed_count", 0))
+            idle_polls = idle_polls + 1 if attempted_count == 0 else 0
+            status = "degraded" if failed_count > 0 else ("idle" if attempted_count == 0 else "active")
+            should_emit_heartbeat = (
+                attempted_count > 0
+                or failed_count > 0
+                or iteration % heartbeat_every_iterations == 0
+                or (
+                    normalized_max_idle_polls is not None
+                    and idle_polls >= normalized_max_idle_polls
+                )
+            )
+            if should_emit_heartbeat:
+                self._record_heartbeat(
+                    heartbeats,
+                    iteration=iteration,
+                    status=status,
+                    attempted_count=attempted_count,
+                    dispatched_count=dispatched_count,
+                    failed_count=failed_count,
+                    idle_polls=idle_polls,
+                    consecutive_failures=consecutive_failures,
+                    error_message=None,
+                    heartbeat_callback=heartbeat_callback,
+                )
+
+            if normalized_max_idle_polls is not None and idle_polls >= normalized_max_idle_polls:
+                break
+            if max_iterations is not None and iteration >= max_iterations:
+                break
+            if poll_interval_seconds > 0:
+                self._sleep_fn(poll_interval_seconds)
+
+        return heartbeats
+
+    def _record_heartbeat(
+        self,
+        heartbeats: list[ImportWorkerHeartbeat],
+        *,
+        iteration: int,
+        status: str,
+        attempted_count: int,
+        dispatched_count: int,
+        failed_count: int,
+        idle_polls: int,
+        consecutive_failures: int,
+        error_message: str | None,
+        heartbeat_callback: Callable[[ImportWorkerHeartbeat], None] | None,
+    ) -> ImportWorkerHeartbeat:
+        heartbeat = ImportWorkerHeartbeat(
+            iteration=iteration,
+            status=status,
+            attempted_count=attempted_count,
+            dispatched_count=dispatched_count,
+            failed_count=failed_count,
+            idle_polls=idle_polls,
+            consecutive_failures=consecutive_failures,
+            emitted_at=self._now_fn(),
+            error_message=error_message,
+        )
+        heartbeats.append(heartbeat)
+        if heartbeat_callback is not None:
+            heartbeat_callback(heartbeat)
+        return heartbeat
+
+
 class AuditFlowImportWorker:
     def __init__(self, app_service) -> None:
         self.app_service = app_service
@@ -123,6 +280,18 @@ class AuditFlowImportWorker:
 
     def register_handler(self, handler: ImportHandler) -> None:
         self._handlers[handler.source_type] = handler
+
+    def build_supervisor(
+        self,
+        *,
+        sleep_fn: Callable[[float], None] = sleep,
+        now_fn: Callable[[], datetime] | None = None,
+    ) -> AuditFlowImportWorkerSupervisor:
+        return AuditFlowImportWorkerSupervisor(
+            self,
+            sleep_fn=sleep_fn,
+            now_fn=now_fn,
+        )
 
     def dispatch_once(self):
         if self.app_service.runtime_stores is None or not hasattr(self.app_service.runtime_stores, "outbox_store"):

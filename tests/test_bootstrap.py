@@ -9,7 +9,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from auditflow_app.bootstrap import build_api_service, build_fastapi_app, build_import_worker, list_supported_workflows
+from auditflow_app.bootstrap import (
+    build_api_service,
+    build_fastapi_app,
+    build_import_worker,
+    build_import_worker_supervisor,
+    list_supported_workflows,
+)
 from auditflow_app.sample_payloads import export_generation_request, upload_import_command
 
 
@@ -46,6 +52,20 @@ class AuditFlowBootstrapTests(unittest.TestCase):
 
         self.assertEqual(result.dispatched_count, 1)
         self.assertTrue(any(item.ingest_status == "normalized" for item in imports.items))
+
+    def test_build_import_worker_supervisor_and_emit_idle_heartbeat(self) -> None:
+        supervisor = build_import_worker_supervisor()
+        self.addCleanup(supervisor.worker.app_service.close)
+
+        heartbeats = supervisor.run(
+            poll_interval_seconds=0,
+            max_iterations=1,
+            max_idle_polls=1,
+            heartbeat_every_iterations=1,
+        )
+
+        self.assertEqual(len(heartbeats), 1)
+        self.assertEqual(heartbeats[0].status, "idle")
 
 
 if __name__ == "__main__":

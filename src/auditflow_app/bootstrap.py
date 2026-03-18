@@ -5,7 +5,7 @@ from typing import Any
 from .repository import SqlAlchemyAuditFlowRepository
 from .shared_runtime import load_shared_agent_platform
 from .service import AuditFlowAppService
-from .worker import AuditFlowImportWorker
+from .worker import AuditFlowImportWorker, AuditFlowImportWorkerSupervisor
 
 SUPPORTED_WORKFLOW_NAMES = (
     "auditflow_cycle_processing",
@@ -71,3 +71,7 @@ def build_fastapi_app(*, database_url: str | None = None):
 
 def build_import_worker(*, database_url: str | None = None) -> AuditFlowImportWorker:
     return AuditFlowImportWorker(build_app_service(database_url=database_url))
+
+
+def build_import_worker_supervisor(*, database_url: str | None = None) -> AuditFlowImportWorkerSupervisor:
+    return build_import_worker(database_url=database_url).build_supervisor()
