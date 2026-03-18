@@ -115,6 +115,14 @@ class ReplayScenarioExecution(ReplayHarnessModel):
     workflows: list[ReplayWorkflowSummary] = Field(default_factory=list)
 
 
+class ReplayStoredArtifactSummary(ReplayHarnessModel):
+    artifact_path: str
+    scenario_name: str
+    created_at: datetime
+    status: str | None = None
+    score: float | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class DemoReplayScenario:
     scenario_name: str
@@ -230,7 +238,54 @@ def replay_report_root() -> Path:
 
 
 def load_replay_baseline(path: str | Path) -> ReplayScenarioBaseline:
-    return ReplayScenarioBaseline.model_validate_json(Path(path).read_text(encoding="utf-8"))
+    baseline = ReplayScenarioBaseline.model_validate_json(Path(path).read_text(encoding="utf-8"))
+    return _hydrate_scenario_metadata(
+        baseline.model_copy(update={"baseline_artifact_path": str(Path(path))})
+    )
+
+
+def load_replay_report(path: str | Path) -> ReplayScenarioEvaluation:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    report_payload = payload["report"] if isinstance(payload, dict) and "report" in payload else payload
+    report = ReplayScenarioEvaluation.model_validate(report_payload)
+    markdown_path = None
+    candidate_markdown = Path(path).with_suffix(".md")
+    if candidate_markdown.exists():
+        markdown_path = str(candidate_markdown)
+    return _hydrate_scenario_metadata(
+        report.model_copy(
+            update={
+                "report_artifact_path": str(Path(path)),
+                "markdown_report_path": markdown_path or report.markdown_report_path,
+            }
+        )
+    )
+
+
+def _scenario_metadata(scenario_name: str) -> dict[str, str | None]:
+    for scenario in DEMO_REPLAY_SCENARIOS:
+        if scenario.scenario_name == scenario_name:
+            return {
+                "scenario_title": scenario.title,
+                "scenario_description": scenario.description,
+                "source_format": scenario.source_format,
+            }
+    return {
+        "scenario_title": None,
+        "scenario_description": None,
+        "source_format": None,
+    }
+
+
+def _hydrate_scenario_metadata(model: ReplayScenarioBaseline | ReplayScenarioEvaluation):
+    metadata = _scenario_metadata(model.scenario_name)
+    return model.model_copy(
+        update={
+            "scenario_title": model.scenario_title or metadata["scenario_title"],
+            "scenario_description": model.scenario_description or metadata["scenario_description"],
+            "source_format": model.source_format or metadata["source_format"],
+        }
+    )
 
 
 class AuditFlowReplayHarness:
@@ -257,6 +312,67 @@ class AuditFlowReplayHarness:
             )
             for scenario in DEMO_REPLAY_SCENARIOS
         ]
+
+    def list_saved_baselines(
+        self,
+        *,
+        scenario_name: str | None = None,
+        limit: int | None = None,
+    ) -> list[ReplayScenarioBaseline]:
+        baselines = [
+            load_replay_baseline(path)
+            for path in sorted(self._baseline_root.glob("*.json"))
+        ]
+        if scenario_name is not None:
+            baselines = [baseline for baseline in baselines if baseline.scenario_name == scenario_name]
+        baselines.sort(key=lambda baseline: baseline.captured_at, reverse=True)
+        return baselines[:limit] if limit is not None else baselines
+
+    def list_saved_reports(
+        self,
+        *,
+        scenario_name: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> list[ReplayScenarioEvaluation]:
+        reports = [
+            load_replay_report(path)
+            for path in sorted(self._report_root.glob("*.json"))
+        ]
+        if scenario_name is not None:
+            reports = [report for report in reports if report.scenario_name == scenario_name]
+        if status is not None:
+            reports = [report for report in reports if report.status == status]
+        reports.sort(key=lambda report: report.created_at, reverse=True)
+        return reports[:limit] if limit is not None else reports
+
+    def list_saved_artifacts(self) -> dict[str, list[ReplayStoredArtifactSummary]]:
+        return {
+            "baselines": [
+                ReplayStoredArtifactSummary(
+                    artifact_path=str(Path(baseline.baseline_artifact_path or "")),
+                    scenario_name=baseline.scenario_name,
+                    created_at=baseline.captured_at,
+                )
+                for baseline in self.list_saved_baselines()
+            ],
+            "reports": [
+                ReplayStoredArtifactSummary(
+                    artifact_path=str(Path(report.report_artifact_path or "")),
+                    scenario_name=report.scenario_name,
+                    created_at=report.created_at,
+                    status=report.status,
+                    score=report.score,
+                )
+                for report in self.list_saved_reports()
+            ],
+        }
+
+    def get_latest_baseline(self, *, scenario_name: str | None = None) -> ReplayScenarioBaseline:
+        baselines = self.list_saved_baselines(scenario_name=scenario_name, limit=1)
+        if not baselines:
+            raise KeyError(scenario_name or "latest-baseline")
+        return baselines[0]
 
     def capture_demo_baselines(
         self,

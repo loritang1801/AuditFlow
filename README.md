@@ -57,8 +57,21 @@ python .\scripts\run_replay_harness.py
 python .\scripts\run_replay_harness.py --list-scenarios
 ```
 
+- List saved replay baselines or reports:
+
+```powershell
+python .\scripts\run_replay_harness.py --list-baselines
+python .\scripts\run_replay_harness.py --list-reports
+```
+
 - Capture all built-in replay baselines:
 
 ```powershell
 python .\scripts\run_replay_harness.py --all --capture-only
+```
+
+- Re-run against the latest saved baseline for one scenario:
+
+```powershell
+python .\scripts\run_replay_harness.py --latest-baseline --scenario-name json_access_review
 ```

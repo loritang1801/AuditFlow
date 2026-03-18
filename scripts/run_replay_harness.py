@@ -22,13 +22,28 @@ def parse_args() -> argparse.Namespace:
         help="List built-in replay scenarios and exit.",
     )
     parser.add_argument(
+        "--list-baselines",
+        action="store_true",
+        help="List saved replay baselines and exit.",
+    )
+    parser.add_argument(
+        "--list-reports",
+        action="store_true",
+        help="List saved replay reports and exit.",
+    )
+    parser.add_argument(
         "--all",
         action="store_true",
         help="Run all built-in replay scenarios instead of a single scenario.",
     )
     parser.add_argument(
+        "--latest-baseline",
+        action="store_true",
+        help="Evaluate using the latest saved baseline for the selected scenario.",
+    )
+    parser.add_argument(
         "--scenario-name",
-        default="demo_cycle_export",
+        default=None,
         help="Scenario name to capture when no baseline file is provided.",
     )
     parser.add_argument(
@@ -52,6 +67,11 @@ def parse_args() -> argparse.Namespace:
         "--report-root",
         help="Optional directory for generated replay reports.",
     )
+    parser.add_argument(
+        "--status",
+        choices=["matched", "mismatched"],
+        help="Optional status filter used with --list-reports.",
+    )
     return parser.parse_args()
 
 
@@ -62,6 +82,7 @@ def main() -> None:
         baseline_root=args.baseline_root,
         report_root=args.report_root,
     )
+    scenario_name = args.scenario_name or "demo_cycle_export"
     if args.list_scenarios:
         print(
             json.dumps(
@@ -70,14 +91,47 @@ def main() -> None:
             )
         )
         return
+    if args.list_baselines:
+        print(
+            json.dumps(
+                {
+                    "baselines": [
+                        item.model_dump(mode="json")
+                        for item in harness.list_saved_baselines(scenario_name=args.scenario_name)
+                    ]
+                },
+                indent=2,
+            )
+        )
+        return
+    if args.list_reports:
+        print(
+            json.dumps(
+                {
+                    "reports": [
+                        item.model_dump(mode="json")
+                        for item in harness.list_saved_reports(
+                            scenario_name=args.scenario_name,
+                            status=args.status,
+                        )
+                    ]
+                },
+                indent=2,
+            )
+        )
+        return
     if args.baseline and args.all:
         raise ValueError("--baseline cannot be combined with --all")
+    if args.latest_baseline and (args.baseline or args.all):
+        raise ValueError("--latest-baseline cannot be combined with --baseline or --all")
     if args.baseline:
         baselines = [load_replay_baseline(args.baseline)]
+    elif args.latest_baseline:
+        baselines = [harness.get_latest_baseline(scenario_name=args.scenario_name)]
     elif args.all:
         baselines = harness.capture_demo_baselines()
     else:
-        baselines = [harness.capture_demo_baseline(scenario_name=args.scenario_name)]
+        baselines = [harness.capture_demo_baseline(scenario_name=scenario_name)]
     if args.capture_only:
         print(json.dumps({"baselines": [baseline.model_dump(mode="json") for baseline in baselines]}, indent=2))
         return

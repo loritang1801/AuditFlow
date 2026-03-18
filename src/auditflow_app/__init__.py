@@ -50,9 +50,11 @@ from .replay_harness import (
     ReplayScenarioEvaluation,
     ReplayScenarioExecution,
     ReplayScenarioInfo,
+    ReplayStoredArtifactSummary,
     ReplayWorkflowEvaluation,
     ReplayWorkflowSummary,
     load_replay_baseline,
+    load_replay_report,
 )
 from .repository import (
     AuditFlowRepository,
@@ -114,6 +116,7 @@ __all__ = [
     "ReplayScenarioEvaluation",
     "ReplayScenarioExecution",
     "ReplayScenarioInfo",
+    "ReplayStoredArtifactSummary",
     "ReplayWorkflowEvaluation",
     "ReplayWorkflowSummary",
     "ReviewDecisionListResponse",
@@ -143,6 +146,7 @@ __all__ = [
     "gap_decision_command",
     "list_supported_workflows",
     "load_replay_baseline",
+    "load_replay_report",
     "mapping_review_command",
     "upload_import_command",
     "workspace_create_command",

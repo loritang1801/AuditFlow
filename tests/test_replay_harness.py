@@ -18,6 +18,7 @@ from auditflow_app.replay_harness import (
     ReplayNodeSummary,
     ReplayWorkflowSummary,
     load_replay_baseline,
+    load_replay_report,
 )
 
 
@@ -96,6 +97,39 @@ class AuditFlowReplayHarnessTests(unittest.TestCase):
 
         self.assertEqual([baseline.scenario_name for baseline in baselines], ["csv_access_review", "html_access_review"])
         self.assertTrue(all(Path(baseline.baseline_artifact_path).exists() for baseline in baselines))
+
+    def test_saved_baseline_and_report_catalog_support_filtering_and_latest_lookup(self) -> None:
+        tmp_dir = _create_repo_tempdir("auditflow-replay-catalog-")
+        self.addCleanup(shutil.rmtree, tmp_dir, ignore_errors=True)
+        database_url = f"sqlite+pysqlite:///{(tmp_dir / 'auditflow.db').resolve().as_posix()}"
+        baseline_root = tmp_dir / "baselines"
+        report_root = tmp_dir / "reports"
+
+        harness = build_replay_harness(
+            database_url=database_url,
+            baseline_root=str(baseline_root),
+            report_root=str(report_root),
+        )
+        baseline_one = harness.capture_demo_baseline(scenario_name="csv_access_review")
+        report_one = harness.evaluate_demo_scenario(baseline_one)
+        baseline_two = harness.capture_demo_baseline(scenario_name="json_access_review")
+        report_two = harness.evaluate_demo_scenario(baseline_two)
+
+        baselines = harness.list_saved_baselines()
+        csv_baselines = harness.list_saved_baselines(scenario_name="csv_access_review")
+        reports = harness.list_saved_reports()
+        matched_reports = harness.list_saved_reports(status="matched")
+        latest_json = harness.get_latest_baseline(scenario_name="json_access_review")
+        loaded_report = load_replay_report(report_two.report_artifact_path)
+
+        self.assertEqual(len(baselines), 2)
+        self.assertEqual(csv_baselines[0].scenario_name, "csv_access_review")
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(len(matched_reports), 2)
+        self.assertEqual(latest_json.baseline_id, baseline_two.baseline_id)
+        self.assertEqual(loaded_report.report_id, report_two.report_id)
+        self.assertEqual(Path(loaded_report.report_artifact_path), Path(report_two.report_artifact_path))
+        self.assertEqual(Path(loaded_report.markdown_report_path), Path(report_two.markdown_report_path))
 
     def test_evaluate_workflow_reports_mismatch_details(self) -> None:
         origin = datetime(2026, 3, 18, 10, 0, tzinfo=UTC)

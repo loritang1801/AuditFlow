@@ -10,5 +10,5 @@ Current implementation includes:
 - `repository.py`: SQLAlchemy-backed product repository
 - `routes.py`: FastAPI route layer and shared response envelopes
 - `worker.py`: import outbox dispatcher and connector-specific handlers
-- `replay_harness.py`: multi-format demo cycle-to-export replay baseline/evaluation capture
+- `replay_harness.py`: multi-format demo cycle-to-export replay baseline/evaluation capture plus saved baseline/report catalog helpers
 - `sample_payloads.py`: demo and test payload builders

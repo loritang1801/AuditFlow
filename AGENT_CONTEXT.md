@@ -28,7 +28,7 @@
 - Import acceptance now also emits `auditflow.import.accepted` product outbox events alongside the worker-dispatch import job event
 - `worker.py` now provides a dedicated import worker over shared `OutboxDispatcher`, filters unrelated outbox events, and supports connector-specific handlers for `upload`, `jira`, and `confluence`
 - `worker.py` now also provides `AuditFlowImportWorkerSupervisor` with retry/backoff, idle-stop, and heartbeat emission, and `scripts/run_import_worker.py` now supports supervised/long-running execution modes
-- `replay_harness.py` now provides a product-scoped replay/evaluation harness for fixed text/CSV/JSON/Markdown/HTML import-to-export scenarios, and `scripts/run_replay_harness.py` can list built-in scenarios plus capture baselines and JSON/Markdown comparison reports under `replay_baselines/` and `replay_reports/`
+- `replay_harness.py` now provides a product-scoped replay/evaluation harness for fixed text/CSV/JSON/Markdown/HTML import-to-export scenarios, and `scripts/run_replay_harness.py` can list built-in scenarios plus saved baseline/report catalogs, capture baselines, and generate JSON/Markdown comparison reports under `replay_baselines/` and `replay_reports/`
 - Import acceptance now collapses duplicate upload and connector requests before enqueueing normalization jobs
 - Import processing now persists raw artifact text, normalized artifact text, and multi-chunk evidence rows before reviewer mapping
 - Upload imports now normalize CSV, JSON, Markdown, HTML, and plain-text artifacts into structured evidence chunks with parser metadata
@@ -71,7 +71,7 @@
 2. Replace the current header-based route auth hook with shared session/token validation
 3. Expand reviewer concurrency handling beyond the current mapping/gap terminal-state policy coverage
 4. Expand reviewer workbench state/query coverage beyond current review-decision history, cycle-level gap/mapping listing, and broader import edge-case coverage
-5. Expand the replay/evaluation harness beyond the current built-in fixture suite into reusable historical baselines and curated regression packs
+5. Expand the replay/evaluation harness beyond the current built-in fixture suite and basic saved-baseline catalog into fixture versioning and curated regression packs
 
 ## Local Note
 
