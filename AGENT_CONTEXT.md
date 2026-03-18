@@ -28,6 +28,7 @@
 - Import acceptance now also emits `auditflow.import.accepted` product outbox events alongside the worker-dispatch import job event
 - `worker.py` now provides a dedicated import worker over shared `OutboxDispatcher`, filters unrelated outbox events, and supports connector-specific handlers for `upload`, `jira`, and `confluence`
 - `worker.py` now also provides `AuditFlowImportWorkerSupervisor` with retry/backoff, idle-stop, and heartbeat emission, and `scripts/run_import_worker.py` now supports supervised/long-running execution modes
+- `replay_harness.py` now provides a product-scoped replay/evaluation harness for the fixed import-to-export demo path, and `scripts/run_replay_harness.py` can capture baselines plus JSON/Markdown comparison reports under `replay_baselines/` and `replay_reports/`
 - Import acceptance now collapses duplicate upload and connector requests before enqueueing normalization jobs
 - Import processing now persists raw artifact text, normalized artifact text, and multi-chunk evidence rows before reviewer mapping
 - Upload imports now normalize CSV, JSON, Markdown, HTML, and plain-text artifacts into structured evidence chunks with parser metadata
@@ -69,7 +70,7 @@
 2. Replace the current header-based route auth hook with shared session/token validation
 3. Expand reviewer concurrency handling beyond the current mapping/gap terminal-state policy coverage
 4. Expand reviewer workbench state/query coverage beyond current review-decision history, cycle-level gap/mapping listing, and broader import edge-case coverage
-5. Add a product-scoped replay/evaluation harness for fixed import-to-export samples
+5. Expand the replay/evaluation harness beyond the fixed demo scenario into reusable fixture suites
 
 ## Local Note
 

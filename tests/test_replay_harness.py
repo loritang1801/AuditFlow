@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import shutil
+import sys
+import tempfile
+import unittest
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from auditflow_app.bootstrap import build_replay_harness
+from auditflow_app.replay_harness import (
+    AuditFlowReplayHarness,
+    ReplayNodeSummary,
+    ReplayWorkflowSummary,
+    load_replay_baseline,
+)
+
+
+def _create_repo_tempdir(prefix: str) -> Path:
+    temp_root = ROOT / ".tmp"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=temp_root))
+
+
+class AuditFlowReplayHarnessTests(unittest.TestCase):
+    def test_capture_and_evaluate_demo_scenario_writes_artifacts(self) -> None:
+        tmp_dir = _create_repo_tempdir("auditflow-replay-")
+        self.addCleanup(shutil.rmtree, tmp_dir, ignore_errors=True)
+        database_url = f"sqlite+pysqlite:///{(tmp_dir / 'auditflow.db').resolve().as_posix()}"
+        baseline_root = tmp_dir / "baselines"
+        report_root = tmp_dir / "reports"
+
+        harness = build_replay_harness(
+            database_url=database_url,
+            baseline_root=str(baseline_root),
+            report_root=str(report_root),
+        )
+        baseline = harness.capture_demo_baseline()
+        loaded = load_replay_baseline(baseline.baseline_artifact_path)
+        evaluation = harness.evaluate_demo_scenario(loaded)
+
+        self.assertEqual(loaded.baseline_id, baseline.baseline_id)
+        self.assertEqual(evaluation.status, "matched")
+        self.assertEqual(evaluation.score, 1.0)
+        self.assertEqual(evaluation.mismatch_count, 0)
+        self.assertEqual(
+            [workflow.workflow_name for workflow in baseline.workflows],
+            ["auditflow_cycle_processing", "auditflow_export_generation"],
+        )
+        self.assertTrue(Path(baseline.baseline_artifact_path).exists())
+        self.assertTrue(Path(evaluation.report_artifact_path).exists())
+        self.assertTrue(Path(evaluation.markdown_report_path).exists())
+
+    def test_evaluate_workflow_reports_mismatch_details(self) -> None:
+        origin = datetime(2026, 3, 18, 10, 0, tzinfo=UTC)
+        baseline_workflow = ReplayWorkflowSummary(
+            workflow_name="auditflow_cycle_processing",
+            workflow_run_id="baseline-cycle-1",
+            workflow_type="auditflow_cycle",
+            final_state="human_review",
+            checkpoint_seq=2,
+            node_summaries=[
+                ReplayNodeSummary(
+                    checkpoint_seq=1,
+                    bundle_id="auditflow.ingestor",
+                    bundle_version="2026-03-18",
+                    model_profile_id="gpt-5.4",
+                    response_schema_ref="schemas/ingestor.json",
+                    output_summary="Ingested uploaded evidence.",
+                    recorded_at=origin,
+                ),
+                ReplayNodeSummary(
+                    checkpoint_seq=2,
+                    bundle_id="auditflow.mapper",
+                    bundle_version="2026-03-18",
+                    model_profile_id="gpt-5.4",
+                    response_schema_ref="schemas/mapper.json",
+                    output_summary="Prepared reviewer mappings.",
+                    recorded_at=origin + timedelta(seconds=1),
+                ),
+            ],
+        )
+        replay_workflow = ReplayWorkflowSummary(
+            workflow_name="auditflow_cycle_processing",
+            workflow_run_id="replay-cycle-1",
+            workflow_type="auditflow_cycle",
+            final_state="exported",
+            checkpoint_seq=3,
+            node_summaries=[
+                ReplayNodeSummary(
+                    checkpoint_seq=1,
+                    bundle_id="auditflow.ingestor",
+                    bundle_version="2026-03-18",
+                    model_profile_id="gpt-5.4",
+                    response_schema_ref="schemas/ingestor.json",
+                    output_summary="Ingested uploaded evidence.",
+                    recorded_at=origin + timedelta(milliseconds=200),
+                ),
+                ReplayNodeSummary(
+                    checkpoint_seq=2,
+                    bundle_id="auditflow.writer",
+                    bundle_version="2026-03-19",
+                    model_profile_id="gpt-5.4",
+                    response_schema_ref="schemas/writer.json",
+                    output_summary="Prepared export package.",
+                    recorded_at=origin + timedelta(seconds=2),
+                ),
+            ],
+        )
+
+        evaluation = AuditFlowReplayHarness._evaluate_workflow(baseline_workflow, replay_workflow)
+
+        self.assertEqual(evaluation.status, "mismatched")
+        self.assertEqual(evaluation.mismatch_count, 5)
+        self.assertEqual(evaluation.baseline_final_state, "human_review")
+        self.assertEqual(evaluation.replay_final_state, "exported")
+        self.assertEqual(evaluation.node_diffs[0].latency_delta_ms, 0)
+        self.assertFalse(evaluation.node_diffs[1].matched)
+        self.assertIn("bundle mismatch", evaluation.node_diffs[1].mismatch_reasons[0])
+        self.assertIn("version mismatch", evaluation.node_diffs[1].mismatch_reasons[1])
+        self.assertIn("summary mismatch", evaluation.node_diffs[1].mismatch_reasons[2])
+
+
+if __name__ == "__main__":
+    unittest.main()

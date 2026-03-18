@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .auth import AuditFlowAuthorizer
+from .replay_harness import AuditFlowReplayHarness
 from .repository import SqlAlchemyAuditFlowRepository
 from .shared_runtime import load_shared_agent_platform
 from .service import AuditFlowAppService
@@ -76,3 +77,16 @@ def build_import_worker(*, database_url: str | None = None) -> AuditFlowImportWo
 
 def build_import_worker_supervisor(*, database_url: str | None = None) -> AuditFlowImportWorkerSupervisor:
     return build_import_worker(database_url=database_url).build_supervisor()
+
+
+def build_replay_harness(
+    *,
+    database_url: str | None = None,
+    baseline_root: str | None = None,
+    report_root: str | None = None,
+) -> AuditFlowReplayHarness:
+    return AuditFlowReplayHarness(
+        service_factory=lambda: build_app_service(database_url=database_url),
+        baseline_root=baseline_root,
+        report_root=report_root,
+    )

@@ -14,8 +14,10 @@ from auditflow_app.bootstrap import (
     build_fastapi_app,
     build_import_worker,
     build_import_worker_supervisor,
+    build_replay_harness,
     list_supported_workflows,
 )
+from auditflow_app.replay_harness import AuditFlowReplayHarness
 from auditflow_app.sample_payloads import export_generation_request, upload_import_command
 
 
@@ -66,6 +68,11 @@ class AuditFlowBootstrapTests(unittest.TestCase):
 
         self.assertEqual(len(heartbeats), 1)
         self.assertEqual(heartbeats[0].status, "idle")
+
+    def test_build_replay_harness(self) -> None:
+        harness = build_replay_harness()
+
+        self.assertIsInstance(harness, AuditFlowReplayHarness)
 
 
 if __name__ == "__main__":
