@@ -33,12 +33,14 @@
 - Import processing now persists raw artifact text, normalized artifact text, and multi-chunk evidence rows before reviewer mapping
 - Upload imports now normalize CSV, JSON, Markdown, HTML, and plain-text artifacts into structured evidence chunks with parser metadata
 - Upload imports now also accept base64-backed binary payloads for PDF, image, DOCX, XLSX, and ZIP evidence, with heuristic text extraction / OCR-style normalization metadata for reviewer workflows
+- Import processing now also persists lexical retrieval index rows for evidence chunks, and reviewer decisions now materialize organization/cycle memory records for accepted/rejected mapping and gap outcomes
 - Reviewer mutations now emit `auditflow.review.recorded`, and export submission/completion now emit `auditflow.export.progress` plus package-ready outbox events for SSE consumers
 - Workflow-backed cycle processing now also emits `auditflow.mapping.progress` using product dashboard counts after materialization completes
 - Reviewer actions now append immutable `review_decision` audit rows for mapping and gap decisions
 - Cycle-level gap records can now be queried with status/severity filters for reviewer workbench backends
 - Review history can now be queried at the cycle level with optional mapping/gap filters for reviewer workbench backends
 - Cycle-level mapping records can now be queried with control/state filters for reviewer workbench backends
+- Product read APIs now include cycle-scoped evidence search plus reviewer-only memory record inspection for retrieval/prompt-grounding debugging
 - Cycle list queries now support `status` filtering and import list routes now accept the contract-level `status` query alias
 - Workspace and cycle create/read models now persist contract-facing slug, owner, audit-period, and snapshot timestamp fields while accepting contract request aliases
 - Cycle creation plus upload/external import and export submission now support persisted idempotency keys, and cycle/import list routes now emit shared envelope metadata with cursor pagination
@@ -69,8 +71,8 @@
 
 1. Expand binary parsing beyond the current PDF/image/DOCX/XLSX/ZIP heuristic support into stronger OCR and broader office/archive coverage
 2. Replace the current header-based route auth hook with shared session/token validation
-3. Expand reviewer concurrency handling beyond the current mapping/gap terminal-state policy coverage
-4. Expand reviewer workbench state/query coverage beyond current review-decision history, cycle-level gap/mapping listing, and broader import edge-case coverage
+3. Upgrade retrieval from the current lexical chunk index into true hybrid retrieval with vector search and direct mapper/skeptic prompt consumption
+4. Expand reviewer workbench state/query coverage beyond current review-decision history, evidence search, memory inspection, cycle-level gap/mapping listing, and broader import edge-case coverage
 5. Expand the replay/evaluation harness beyond the current built-in fixture suite and basic saved-baseline catalog into fixture versioning and curated regression packs
 
 ## Local Note

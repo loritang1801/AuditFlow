@@ -28,6 +28,7 @@ from .api_models import (
     CreateWorkspaceCommand,
     CycleProcessingCommand,
     EvidenceDetail,
+    EvidenceSearchResponse,
     ExternalImportCommand,
     GapDecisionCommand,
     GapSummary,
@@ -38,6 +39,7 @@ from .api_models import (
     ExportCreateCommand,
     ExportGenerationCommand,
     ExportPackageSummary,
+    MemoryRecordListResponse,
     MappingReviewCommand,
     MappingReviewResponse,
     NarrativeSummary,
@@ -203,6 +205,34 @@ class AuditFlowAppService:
 
     def get_evidence(self, evidence_id: str) -> EvidenceDetail:
         return self.repository.get_evidence(evidence_id)
+
+    def search_evidence(
+        self,
+        cycle_id: str,
+        *,
+        query: str,
+        limit: int = 5,
+    ) -> EvidenceSearchResponse:
+        return self.repository.search_evidence(cycle_id=cycle_id, query=query, limit=limit)
+
+    def list_memory_records(
+        self,
+        cycle_id: str,
+        *,
+        scope: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        memory_type: str | None = None,
+        status: str | None = "active",
+    ) -> MemoryRecordListResponse:
+        return self.repository.list_memory_records(
+            cycle_id,
+            scope=scope,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            memory_type=memory_type,
+            status=status,
+        )
 
     def list_gaps(
         self,

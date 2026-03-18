@@ -23,6 +23,7 @@ ERROR_STATUS_BY_CODE = {
     "INVALID_REVIEW_QUEUE_SORT": 400,
     "INVALID_CURSOR": 400,
     "INVALID_ARTIFACT_BYTES": 400,
+    "INVALID_SEARCH_QUERY": 400,
 }
 
 from .api_models import (
@@ -48,12 +49,14 @@ from .api_models import (
     ExportGenerationCommand,
     ExportPackageSummary,
     HealthResponse,
+    MemoryRecordListResponse,
     MappingReviewCommand,
     MappingReviewResponse,
     NarrativeSummary,
     ReviewDecisionListResponse,
     ReviewQueueResponse,
     UploadImportCommand,
+    EvidenceSearchResponse,
 )
 from .service import AuditFlowAppService
 from .shared_runtime import load_shared_agent_platform
@@ -545,6 +548,57 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         return success_envelope(
             service.get_evidence(evidence_id),
             request_id=request_id,
+        )
+
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/evidence-search")
+    def search_evidence(
+        cycle_id: str,
+        query: str,
+        limit: int = 5,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_viewer_access),
+    ) -> dict[str, object]:
+        del auth_context
+        response = service.search_evidence(cycle_id, query=query, limit=limit)
+        return success_envelope(
+            response,
+            request_id=request_id,
+        )
+
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/memory-records")
+    def list_memory_records(
+        cycle_id: str,
+        scope: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        memory_type: str | None = None,
+        status: str | None = "active",
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_reviewer_access),
+    ) -> dict[str, object]:
+        del auth_context
+        response = service.list_memory_records(
+            cycle_id,
+            scope=scope,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            memory_type=memory_type,
+            status=status,
+        )
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        paged_response = MemoryRecordListResponse(
+            cycle_id=response.cycle_id,
+            workspace_id=response.workspace_id,
+            total_count=response.total_count,
+            items=page_items,
+        )
+        return success_envelope(
+            paged_response,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
         )
 
     @app.get("/api/v1/auditflow/cycles/{cycle_id}/gaps")

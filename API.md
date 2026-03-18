@@ -1,7 +1,7 @@
 # AuditFlow API and Event Contracts
 
 - Version: v0.1
-- Date: 2026-03-16
+- Date: 2026-03-18
 - Scope: `AuditFlow` REST, SSE, and async event contracts
 
 ## 1. Contract Summary
@@ -9,7 +9,7 @@
 This document defines the implementation-grade interface for `AuditFlow`:
 
 1. Audit workspace and cycle APIs
-2. Evidence import and evidence detail APIs
+2. Evidence import, evidence detail, and retrieval/memory inspection APIs
 3. Control coverage and review queue APIs
 4. Gap, narrative, and export APIs
 5. AuditFlow-specific SSE and outbox events
@@ -98,6 +98,50 @@ Shared authentication, response envelope, and approval APIs are defined in the s
       "text_excerpt": "Quarterly access review..."
     }
   ]
+}
+```
+
+### 3.4.1 `EvidenceSearchResponse`
+
+```json
+{
+  "cycle_id": "uuid",
+  "workspace_id": "uuid",
+  "query": "access review",
+  "total_count": 2,
+  "items": [
+    {
+      "evidence_chunk_id": "uuid",
+      "evidence_item_id": "uuid",
+      "score": 1.82,
+      "summary": "Quarterly access review completed.",
+      "title": "Jira Access Review Ticket",
+      "section_label": "Description",
+      "text_excerpt": "Quarterly access review completed for production systems."
+    }
+  ]
+}
+```
+
+### 3.4.2 `MemoryRecordSummary`
+
+```json
+{
+  "memory_id": "uuid",
+  "scope": "organization",
+  "subject_type": "framework_control",
+  "subject_id": "SOC2:CC6.1",
+  "memory_key": "mapping:mapping-1",
+  "memory_type": "pattern",
+  "value": {
+    "decision": "accept",
+    "control_code": "CC6.1"
+  },
+  "confidence": 1.0,
+  "source_kind": "human_feedback",
+  "status": "active",
+  "created_at": "2026-03-18T09:00:00Z",
+  "updated_at": "2026-03-18T09:00:00Z"
 }
 ```
 
@@ -456,6 +500,45 @@ Auth: `viewer`
 Response:
 
 - `200 OK` with `EvidenceDetail`
+
+### 4.11.A `GET /api/v1/auditflow/cycles/:cycleId/evidence-search`
+
+Purpose: search indexed evidence chunks within one cycle.
+
+Auth: `viewer`
+
+Query params:
+
+- `query` required
+- `limit`
+
+Response:
+
+- `200 OK` with `EvidenceSearchResponse`
+
+Errors:
+
+- `INVALID_SEARCH_QUERY`
+
+### 4.11.B `GET /api/v1/auditflow/cycles/:cycleId/memory-records`
+
+Purpose: inspect product-side retrieval memory derived from reviewer outcomes.
+
+Auth: `reviewer` or stronger
+
+Query params:
+
+- `scope`
+- `subject_type`
+- `subject_id`
+- `memory_type`
+- `status`
+- `cursor`
+- `limit`
+
+Response:
+
+- `200 OK` with paginated `MemoryRecordSummary[]`
 
 ### 4.11.1 `GET /api/v1/auditflow/cycles/:cycleId/gaps`
 
@@ -880,6 +963,7 @@ Payload:
 | `AUDIT_CYCLE_NOT_FOUND` | `404` | Cycle missing or hidden |
 | `CONTROL_STATE_NOT_FOUND` | `404` | Control state not found |
 | `EVIDENCE_NOT_FOUND` | `404` | Evidence item not found |
+| `INVALID_SEARCH_QUERY` | `400` | Retrieval query is blank or invalid |
 | `SOURCE_AUTH_REQUIRED` | `409` | External connector needs re-auth |
 | `IMPORT_TARGET_NOT_FOUND` | `404` | Upstream object missing |
 | `EVIDENCE_PARSE_FAILED` | `422` | Raw file could not be normalized |

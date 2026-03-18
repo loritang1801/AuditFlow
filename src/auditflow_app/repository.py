@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime
 from typing import Protocol
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Integer, String, Text, UniqueConstraint, select
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, Integer, String, Text, UniqueConstraint, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -22,6 +22,8 @@ from .api_models import (
     EvidenceChunk,
     EvidenceDetail,
     EvidenceImportSummary,
+    EvidenceSearchItem,
+    EvidenceSearchResponse,
     ExternalImportCommand,
     ExportPackageSummary,
     GapDecisionCommand,
@@ -32,6 +34,8 @@ from .api_models import (
     MappingReviewCommand,
     MappingReviewResponse,
     MappingSummary,
+    MemoryRecordListResponse,
+    MemoryRecordSummary,
     NarrativeSummary,
     ReviewDecisionListResponse,
     ReviewDecisionSummary,
@@ -90,6 +94,8 @@ SEEDED_CONTROL_STATE_IDS = {
 }
 
 DEFAULT_REVIEWER_ID = "reviewer-demo"
+DEFAULT_ORGANIZATION_ID = "org-1"
+LEXICAL_MODEL_NAME = "lexical-v1"
 
 
 def _slugify(value: str) -> str:
@@ -132,6 +138,25 @@ class AuditFlowRepository(Protocol):
     def get_control_detail(self, control_state_id: str) -> ControlDetailResponse: ...
 
     def get_evidence(self, evidence_id: str) -> EvidenceDetail: ...
+
+    def search_evidence(
+        self,
+        *,
+        cycle_id: str,
+        query: str,
+        limit: int = 5,
+    ) -> EvidenceSearchResponse: ...
+
+    def list_memory_records(
+        self,
+        cycle_id: str,
+        *,
+        scope: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        memory_type: str | None = None,
+        status: str | None = "active",
+    ) -> MemoryRecordListResponse: ...
 
     def list_gaps(
         self,
@@ -441,6 +466,61 @@ class EvidenceChunkRow(Base):
     text_excerpt: Mapped[str] = mapped_column(Text)
 
 
+class MemoryRecordRow(Base):
+    __tablename__ = "auditflow_memory_record"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "scope",
+            "subject_type",
+            "subject_id",
+            "memory_key",
+            "status",
+            name="uq_auditflow_memory_record_scope_subject_key_status",
+        ),
+    )
+
+    memory_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(String(255), index=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    scope: Mapped[str] = mapped_column(String(40), index=True)
+    subject_type: Mapped[str] = mapped_column(String(80), index=True)
+    subject_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    memory_key: Mapped[str] = mapped_column(String(120))
+    memory_type: Mapped[str] = mapped_column(String(50), index=True)
+    value_payload: Mapped[dict] = mapped_column(JSON)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_kind: Mapped[str] = mapped_column(String(40))
+    source_ref_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+
+
+class EmbeddingChunkRow(Base):
+    __tablename__ = "auditflow_embedding_chunk"
+    __table_args__ = (
+        UniqueConstraint(
+            "subject_type",
+            "subject_id",
+            "chunk_index",
+            "model_name",
+            name="uq_auditflow_embedding_chunk_subject_chunk_model",
+        ),
+    )
+
+    embedding_chunk_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(String(255), index=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    subject_type: Mapped[str] = mapped_column(String(80), index=True)
+    subject_id: Mapped[str] = mapped_column(String(255), index=True)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    text_content: Mapped[str] = mapped_column(Text)
+    metadata_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    model_name: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+
+
 class NarrativeRow(Base):
     __tablename__ = "auditflow_narrative"
 
@@ -478,6 +558,7 @@ class SqlAlchemyAuditFlowRepository:
         self.engine = engine
         create_auditflow_tables(engine)
         self.seed_if_empty()
+        self.backfill_retrieval_state()
 
     @classmethod
     def from_runtime_stores(cls, runtime_stores) -> "SqlAlchemyAuditFlowRepository":
@@ -613,6 +694,327 @@ class SqlAlchemyAuditFlowRepository:
                 )
             )
 
+    def backfill_retrieval_state(self) -> None:
+        with self.session_factory.begin() as session:
+            cycle_rows = session.scalars(select(AuditCycleRow)).all()
+            cycles_by_id = {row.cycle_id: row for row in cycle_rows}
+            evidence_rows = session.scalars(select(EvidenceRow).order_by(EvidenceRow.evidence_id.asc())).all()
+            for evidence_row in evidence_rows:
+                cycle_row = cycles_by_id.get(evidence_row.audit_cycle_id)
+                if cycle_row is None:
+                    continue
+                chunk_rows = session.scalars(
+                    select(EvidenceChunkRow)
+                    .where(EvidenceChunkRow.evidence_id == evidence_row.evidence_id)
+                    .order_by(EvidenceChunkRow.chunk_index.asc())
+                ).all()
+                if not chunk_rows:
+                    continue
+                existing_count = len(
+                    session.scalars(
+                        select(EmbeddingChunkRow.embedding_chunk_id)
+                        .where(EmbeddingChunkRow.subject_type == "audit_evidence")
+                        .where(EmbeddingChunkRow.subject_id == evidence_row.evidence_id)
+                        .where(EmbeddingChunkRow.model_name == LEXICAL_MODEL_NAME)
+                    ).all()
+                )
+                if existing_count == len(chunk_rows):
+                    continue
+                self._sync_embedding_chunks(
+                    session,
+                    cycle_row=cycle_row,
+                    evidence_row=evidence_row,
+                    chunk_rows=chunk_rows,
+                )
+
+    @classmethod
+    def _sync_embedding_chunks(
+        cls,
+        session: Session,
+        *,
+        cycle_row: AuditCycleRow,
+        evidence_row: EvidenceRow,
+        chunk_rows: list[EvidenceChunkRow],
+    ) -> None:
+        existing_rows = session.scalars(
+            select(EmbeddingChunkRow)
+            .where(EmbeddingChunkRow.subject_type == "audit_evidence")
+            .where(EmbeddingChunkRow.subject_id == evidence_row.evidence_id)
+            .where(EmbeddingChunkRow.model_name == LEXICAL_MODEL_NAME)
+        ).all()
+        for row in existing_rows:
+            session.delete(row)
+        created_at = cls._normalize_timestamp(evidence_row.captured_at) or cls._utcnow_naive()
+        source_payload = evidence_row.source_payload if isinstance(evidence_row.source_payload, dict) else {}
+        for chunk_row in chunk_rows:
+            session.add(
+                EmbeddingChunkRow(
+                    embedding_chunk_id=f"embedding-{uuid4().hex[:10]}",
+                    organization_id=DEFAULT_ORGANIZATION_ID,
+                    workspace_id=cycle_row.workspace_id,
+                    subject_type="audit_evidence",
+                    subject_id=evidence_row.evidence_id,
+                    chunk_index=chunk_row.chunk_index,
+                    text_content=chunk_row.text_excerpt,
+                    metadata_payload=cls._build_embedding_metadata(
+                        cycle_row=cycle_row,
+                        evidence_row=evidence_row,
+                        chunk_row=chunk_row,
+                        source_payload=source_payload,
+                    ),
+                    model_name=LEXICAL_MODEL_NAME,
+                    created_at=created_at,
+                )
+            )
+
+    @classmethod
+    def _build_embedding_metadata(
+        cls,
+        *,
+        cycle_row: AuditCycleRow,
+        evidence_row: EvidenceRow,
+        chunk_row: EvidenceChunkRow,
+        source_payload: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "cycle_id": cycle_row.cycle_id,
+            "framework_name": cycle_row.framework_name,
+            "evidence_item_id": evidence_row.evidence_id,
+            "chunk_id": chunk_row.chunk_id,
+            "title": evidence_row.title,
+            "summary": evidence_row.summary,
+            "section_label": chunk_row.section_label,
+            "source_type": source_payload.get("source_type"),
+            "source_locator": source_payload.get("source_locator"),
+            "captured_at": cls._serialize_timestamp(evidence_row.captured_at),
+        }
+
+    @classmethod
+    def _upsert_memory_record(
+        cls,
+        session: Session,
+        *,
+        organization_id: str = DEFAULT_ORGANIZATION_ID,
+        workspace_id: str | None,
+        scope: str,
+        subject_type: str,
+        subject_id: str | None,
+        memory_key: str,
+        memory_type: str,
+        value_payload: dict[str, object],
+        confidence: float | None,
+        source_kind: str,
+        source_ref_payload: dict[str, object] | None,
+        status: str = "active",
+    ) -> MemoryRecordRow:
+        stmt = (
+            select(MemoryRecordRow)
+            .where(MemoryRecordRow.organization_id == organization_id)
+            .where(MemoryRecordRow.scope == scope)
+            .where(MemoryRecordRow.subject_type == subject_type)
+            .where(MemoryRecordRow.memory_key == memory_key)
+            .where(MemoryRecordRow.status == status)
+        )
+        if subject_id is None:
+            stmt = stmt.where(MemoryRecordRow.subject_id.is_(None))
+        else:
+            stmt = stmt.where(MemoryRecordRow.subject_id == subject_id)
+        row = session.scalars(stmt.limit(1)).first()
+        now = cls._utcnow_naive()
+        if row is None:
+            row = MemoryRecordRow(
+                memory_id=f"memory-{uuid4().hex[:10]}",
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                scope=scope,
+                subject_type=subject_type,
+                subject_id=subject_id,
+                memory_key=memory_key,
+                memory_type=memory_type,
+                value_payload=dict(value_payload),
+                confidence=confidence,
+                source_kind=source_kind,
+                source_ref_payload=(dict(source_ref_payload) if source_ref_payload is not None else None),
+                status=status,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            return row
+        row.workspace_id = workspace_id
+        row.memory_type = memory_type
+        row.value_payload = dict(value_payload)
+        row.confidence = confidence
+        row.source_kind = source_kind
+        row.source_ref_payload = dict(source_ref_payload) if source_ref_payload is not None else None
+        row.updated_at = now
+        return row
+
+    @classmethod
+    def _record_mapping_memories(
+        cls,
+        session: Session,
+        *,
+        cycle_row: AuditCycleRow,
+        mapping_row: MappingRow,
+        evidence_row: EvidenceRow | None,
+        decision_row: ReviewDecisionRow,
+        decision: str,
+        comment: str,
+        from_status: str,
+        subject_control_state_id: str,
+        subject_control_code: str,
+    ) -> None:
+        source_ref_payload = {
+            "cycle_id": cycle_row.cycle_id,
+            "mapping_id": mapping_row.mapping_id,
+            "review_decision_id": decision_row.review_decision_id,
+            "evidence_item_id": mapping_row.evidence_item_id,
+        }
+        memory_value = {
+            "decision": decision,
+            "from_status": from_status,
+            "to_status": mapping_row.mapping_status,
+            "control_state_id": subject_control_state_id,
+            "control_code": subject_control_code,
+            "framework_name": cycle_row.framework_name,
+            "cycle_id": cycle_row.cycle_id,
+            "evidence_item_id": mapping_row.evidence_item_id,
+            "evidence_title": evidence_row.title if evidence_row is not None else None,
+            "evidence_summary": evidence_row.summary if evidence_row is not None else None,
+            "rationale_summary": mapping_row.rationale_summary,
+            "citation_refs": list(mapping_row.citation_refs or []),
+            "comment": comment or None,
+        }
+        subject_id = f"{cycle_row.framework_name}:{subject_control_code}"
+        confidence = 1.0 if decision == "accept" else 0.85 if decision == "reassign" else 0.7
+        cls._upsert_memory_record(
+            session,
+            workspace_id=cycle_row.workspace_id,
+            scope="organization",
+            subject_type="framework_control",
+            subject_id=subject_id,
+            memory_key=f"mapping:{mapping_row.mapping_id}",
+            memory_type="pattern",
+            value_payload=memory_value,
+            confidence=confidence,
+            source_kind="human_feedback",
+            source_ref_payload=source_ref_payload,
+        )
+        cls._upsert_memory_record(
+            session,
+            workspace_id=cycle_row.workspace_id,
+            scope="cycle",
+            subject_type="audit_cycle",
+            subject_id=cycle_row.cycle_id,
+            memory_key=f"mapping:{mapping_row.mapping_id}",
+            memory_type="fact",
+            value_payload=memory_value,
+            confidence=confidence,
+            source_kind="human_feedback",
+            source_ref_payload=source_ref_payload,
+        )
+
+    @classmethod
+    def _record_gap_memory(
+        cls,
+        session: Session,
+        *,
+        cycle_row: AuditCycleRow,
+        control_row: ControlCoverageRow,
+        gap_row: GapRow,
+        decision_row: ReviewDecisionRow,
+        decision: str,
+        comment: str,
+        from_status: str,
+    ) -> None:
+        cls._upsert_memory_record(
+            session,
+            workspace_id=cycle_row.workspace_id,
+            scope="cycle",
+            subject_type="audit_cycle",
+            subject_id=cycle_row.cycle_id,
+            memory_key=f"gap:{gap_row.gap_id}",
+            memory_type="fact",
+            value_payload={
+                "decision": decision,
+                "from_status": from_status,
+                "to_status": gap_row.status,
+                "cycle_id": cycle_row.cycle_id,
+                "framework_name": cycle_row.framework_name,
+                "control_state_id": control_row.control_state_id,
+                "control_code": control_row.control_code,
+                "gap_id": gap_row.gap_id,
+                "gap_type": gap_row.gap_type,
+                "severity": gap_row.severity,
+                "title": gap_row.title,
+                "recommended_action": gap_row.recommended_action,
+                "comment": comment or None,
+            },
+            confidence=1.0 if decision == "resolve_gap" else 0.8,
+            source_kind="human_feedback",
+            source_ref_payload={
+                "cycle_id": cycle_row.cycle_id,
+                "gap_id": gap_row.gap_id,
+                "review_decision_id": decision_row.review_decision_id,
+            },
+        )
+
+    @staticmethod
+    def _tokenize_search_text(value: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", value.lower()))
+
+    @classmethod
+    def _score_search_match(
+        cls,
+        *,
+        query: str,
+        text_content: str,
+        metadata_payload: dict[str, object],
+    ) -> float:
+        normalized_query = query.strip().lower()
+        if not normalized_query:
+            return 0.0
+        query_tokens = cls._tokenize_search_text(normalized_query)
+        if not query_tokens:
+            return 0.0
+        title = str(metadata_payload.get("title") or "")
+        summary = str(metadata_payload.get("summary") or "")
+        section_label = str(metadata_payload.get("section_label") or "")
+        search_text = "\n".join(part for part in (title, summary, section_label, text_content) if part).lower()
+        search_tokens = cls._tokenize_search_text(search_text)
+        overlap = len(query_tokens & search_tokens)
+        if overlap == 0 and normalized_query not in search_text:
+            return 0.0
+        score = overlap / len(query_tokens)
+        if normalized_query in search_text:
+            score += 1.2
+        if normalized_query in text_content.lower():
+            score += 0.6
+        if title and normalized_query in title.lower():
+            score += 0.35
+        if summary and normalized_query in summary.lower():
+            score += 0.2
+        score += min(len(query_tokens & cls._tokenize_search_text(title)) * 0.1, 0.3)
+        score += min(len(query_tokens & cls._tokenize_search_text(summary)) * 0.05, 0.2)
+        return round(score, 4)
+
+    @classmethod
+    def _serialize_timestamp(cls, value: datetime | None) -> str | None:
+        normalized = cls._normalize_timestamp(value)
+        if normalized is None:
+            return None
+        return normalized.replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
+
+    @classmethod
+    def _parse_timestamp(cls, value: object) -> datetime | None:
+        if not isinstance(value, str) or value == "":
+            return None
+        try:
+            return cls._normalize_timestamp(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+
     @staticmethod
     def _to_workspace(row: AuditWorkspaceRow) -> AuditWorkspaceSummary:
         return AuditWorkspaceSummary(
@@ -697,6 +1099,28 @@ class SqlAlchemyAuditFlowRepository:
             comment=row.comment,
             feedback_tags=row.feedback_tags,
             created_at=row.created_at,
+        )
+
+    @staticmethod
+    def _to_memory_record(row: MemoryRecordRow) -> MemoryRecordSummary:
+        return MemoryRecordSummary(
+            memory_id=row.memory_id,
+            scope=row.scope,
+            subject_type=row.subject_type,
+            subject_id=row.subject_id,
+            memory_key=row.memory_key,
+            memory_type=row.memory_type,
+            value=(dict(row.value_payload) if isinstance(row.value_payload, dict) else {}),
+            confidence=row.confidence,
+            source_kind=row.source_kind,
+            source_ref=(
+                dict(row.source_ref_payload)
+                if isinstance(row.source_ref_payload, dict)
+                else None
+            ),
+            status=row.status,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
         )
 
     @staticmethod
@@ -993,6 +1417,118 @@ class SqlAlchemyAuditFlowRepository:
                     )
                     for row in chunk_rows
                 ],
+            )
+
+    def search_evidence(
+        self,
+        *,
+        cycle_id: str,
+        query: str,
+        limit: int = 5,
+    ) -> EvidenceSearchResponse:
+        normalized_query = query.strip()
+        if normalized_query == "":
+            raise ValueError("INVALID_SEARCH_QUERY")
+        normalized_limit = max(1, min(limit, 20))
+        with self.session_factory() as session:
+            cycle_row = session.get(AuditCycleRow, cycle_id)
+            if cycle_row is None:
+                raise KeyError(cycle_id)
+            rows = session.scalars(
+                select(EmbeddingChunkRow)
+                .where(EmbeddingChunkRow.workspace_id == cycle_row.workspace_id)
+                .where(EmbeddingChunkRow.subject_type == "audit_evidence")
+                .where(EmbeddingChunkRow.model_name == LEXICAL_MODEL_NAME)
+                .order_by(EmbeddingChunkRow.created_at.desc(), EmbeddingChunkRow.chunk_index.asc())
+            ).all()
+            items: list[EvidenceSearchItem] = []
+            for row in rows:
+                metadata_payload = row.metadata_payload if isinstance(row.metadata_payload, dict) else {}
+                if metadata_payload.get("cycle_id") != cycle_id:
+                    continue
+                score = self._score_search_match(
+                    query=normalized_query,
+                    text_content=row.text_content,
+                    metadata_payload=metadata_payload,
+                )
+                if score <= 0:
+                    continue
+                items.append(
+                    EvidenceSearchItem(
+                        evidence_chunk_id=str(
+                            metadata_payload.get("chunk_id") or f"{row.subject_id}:{row.chunk_index}"
+                        ),
+                        evidence_item_id=str(
+                            metadata_payload.get("evidence_item_id") or row.subject_id
+                        ),
+                        score=score,
+                        summary=str(metadata_payload.get("summary") or row.text_content[:160]),
+                        title=str(metadata_payload.get("title") or row.subject_id),
+                        section_label=(
+                            str(metadata_payload["section_label"])
+                            if metadata_payload.get("section_label") is not None
+                            else None
+                        ),
+                        text_excerpt=row.text_content,
+                        source_type=(
+                            str(metadata_payload["source_type"])
+                            if metadata_payload.get("source_type") is not None
+                            else None
+                        ),
+                        captured_at=self._parse_timestamp(metadata_payload.get("captured_at")),
+                    )
+                )
+            items.sort(
+                key=lambda item: (
+                    item.score,
+                    item.captured_at or datetime.min,
+                    item.evidence_chunk_id,
+                ),
+                reverse=True,
+            )
+            items = items[:normalized_limit]
+            return EvidenceSearchResponse(
+                cycle_id=cycle_id,
+                workspace_id=cycle_row.workspace_id,
+                query=normalized_query,
+                total_count=len(items),
+                items=items,
+            )
+
+    def list_memory_records(
+        self,
+        cycle_id: str,
+        *,
+        scope: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        memory_type: str | None = None,
+        status: str | None = "active",
+    ) -> MemoryRecordListResponse:
+        with self.session_factory() as session:
+            cycle_row = session.get(AuditCycleRow, cycle_id)
+            if cycle_row is None:
+                raise KeyError(cycle_id)
+            stmt = select(MemoryRecordRow).where(MemoryRecordRow.workspace_id == cycle_row.workspace_id)
+            if scope is not None:
+                stmt = stmt.where(MemoryRecordRow.scope == scope)
+            if subject_type is not None:
+                stmt = stmt.where(MemoryRecordRow.subject_type == subject_type)
+            if subject_id is not None:
+                stmt = stmt.where(MemoryRecordRow.subject_id == subject_id)
+            if memory_type is not None:
+                stmt = stmt.where(MemoryRecordRow.memory_type == memory_type)
+            if status is not None:
+                stmt = stmt.where(MemoryRecordRow.status == status)
+            rows = session.scalars(
+                stmt.order_by(MemoryRecordRow.updated_at.desc(), MemoryRecordRow.memory_id.desc())
+            ).all()
+            items = [self._to_memory_record(row) for row in rows]
+            return MemoryRecordListResponse(
+                cycle_id=cycle_id,
+                workspace_id=cycle_row.workspace_id,
+                total_count=len(items),
+                items=items,
             )
 
     def list_gaps(
@@ -1338,16 +1874,24 @@ class SqlAlchemyAuditFlowRepository:
                 for chunk_row in existing_chunks:
                     session.delete(chunk_row)
 
+            chunk_rows_to_index: list[EvidenceChunkRow] = []
             for chunk_index, chunk_text in enumerate(normalized_chunks):
-                session.add(
-                    EvidenceChunkRow(
-                        chunk_id=f"chunk-{uuid4().hex[:10]}",
-                        evidence_id=evidence_row.evidence_id,
-                        chunk_index=chunk_index,
-                        section_label=f"Chunk {chunk_index + 1}",
-                        text_excerpt=chunk_text,
-                    )
+                chunk_row = EvidenceChunkRow(
+                    chunk_id=f"chunk-{uuid4().hex[:10]}",
+                    evidence_id=evidence_row.evidence_id,
+                    chunk_index=chunk_index,
+                    section_label=f"Chunk {chunk_index + 1}",
+                    text_excerpt=chunk_text,
                 )
+                session.add(chunk_row)
+                chunk_rows_to_index.append(chunk_row)
+
+            self._sync_embedding_chunks(
+                session,
+                cycle_row=cycle_row,
+                evidence_row=evidence_row,
+                chunk_rows=chunk_rows_to_index,
+            )
 
             control_row = session.scalars(
                 select(ControlCoverageRow)
@@ -1415,6 +1959,7 @@ class SqlAlchemyAuditFlowRepository:
             cycle_row = session.get(AuditCycleRow, mapping_row.cycle_id)
             if cycle_row is None:
                 raise KeyError(mapping_row.cycle_id)
+            evidence_row = session.get(EvidenceRow, mapping_row.evidence_item_id)
             if command.expected_updated_at is not None and not self._timestamps_match(
                 mapping_row.updated_at,
                 command.expected_updated_at,
@@ -1429,6 +1974,7 @@ class SqlAlchemyAuditFlowRepository:
                 raise ValueError("MAPPING_ALREADY_TERMINAL")
             previous_status = mapping_row.mapping_status
             original_control_id = mapping_row.control_state_id
+            original_control_code = mapping_row.control_code
             if command.decision == "reassign":
                 if command.target_control_id is None:
                     raise ValueError("target_control_id is required for reassign")
@@ -1447,7 +1993,7 @@ class SqlAlchemyAuditFlowRepository:
             mapping_row.updated_at = review_time
             cycle_row.last_reviewed_at = review_time
             cycle_row.updated_at = review_time
-            self._append_review_decision(
+            decision_row = self._append_review_decision(
                 session,
                 cycle_id=mapping_row.cycle_id,
                 mapping_id=mapping_row.mapping_id,
@@ -1456,6 +2002,24 @@ class SqlAlchemyAuditFlowRepository:
                 from_status=previous_status,
                 to_status=mapping_row.mapping_status,
                 comment=command.comment,
+            )
+            subject_control_state_id = (
+                original_control_id if command.decision == "reassign" else mapping_row.control_state_id
+            )
+            subject_control_code = (
+                original_control_code if command.decision == "reassign" else mapping_row.control_code
+            )
+            self._record_mapping_memories(
+                session,
+                cycle_row=cycle_row,
+                mapping_row=mapping_row,
+                evidence_row=evidence_row,
+                decision_row=decision_row,
+                decision=command.decision,
+                comment=command.comment,
+                from_status=previous_status,
+                subject_control_state_id=subject_control_state_id,
+                subject_control_code=subject_control_code,
             )
 
             for control_id in {original_control_id, mapping_row.control_state_id}:
@@ -1513,7 +2077,7 @@ class SqlAlchemyAuditFlowRepository:
             gap_row.updated_at = review_time
             cycle_row.last_reviewed_at = review_time
             cycle_row.updated_at = review_time
-            self._append_review_decision(
+            decision_row = self._append_review_decision(
                 session,
                 cycle_id=control_row.cycle_id,
                 mapping_id=None,
@@ -1522,6 +2086,16 @@ class SqlAlchemyAuditFlowRepository:
                 from_status=previous_status,
                 to_status=gap_row.status,
                 comment=command.comment,
+            )
+            self._record_gap_memory(
+                session,
+                cycle_row=cycle_row,
+                control_row=control_row,
+                gap_row=gap_row,
+                decision_row=decision_row,
+                decision=command.decision,
+                comment=command.comment,
+                from_status=previous_status,
             )
             self._refresh_control_state(session, control_row.control_state_id)
             self._refresh_cycle_counts(session, control_row.cycle_id)
@@ -2038,22 +2612,22 @@ class SqlAlchemyAuditFlowRepository:
         from_status: str | None,
         to_status: str | None,
         comment: str | None,
-    ) -> None:
-        session.add(
-            ReviewDecisionRow(
-                review_decision_id=f"review-decision-{uuid4().hex[:10]}",
-                cycle_id=cycle_id,
-                mapping_id=mapping_id,
-                gap_id=gap_id,
-                decision=decision,
-                from_status=from_status,
-                to_status=to_status,
-                reviewer_id=DEFAULT_REVIEWER_ID,
-                comment=comment or None,
-                feedback_tags=cls._decision_feedback_tags(decision, to_status),
-                created_at=cls._utcnow_naive(),
-            )
+    ) -> ReviewDecisionRow:
+        row = ReviewDecisionRow(
+            review_decision_id=f"review-decision-{uuid4().hex[:10]}",
+            cycle_id=cycle_id,
+            mapping_id=mapping_id,
+            gap_id=gap_id,
+            decision=decision,
+            from_status=from_status,
+            to_status=to_status,
+            reviewer_id=DEFAULT_REVIEWER_ID,
+            comment=comment or None,
+            feedback_tags=cls._decision_feedback_tags(decision, to_status),
+            created_at=cls._utcnow_naive(),
         )
+        session.add(row)
+        return row
 
     @staticmethod
     def _decision_feedback_tags(decision: str, to_status: str | None) -> list[str]:

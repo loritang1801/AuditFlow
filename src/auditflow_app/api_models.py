@@ -188,6 +188,49 @@ class EvidenceDetail(AuditFlowModel):
     chunks: list[EvidenceChunk] = Field(default_factory=list)
 
 
+class EvidenceSearchItem(AuditFlowModel):
+    evidence_chunk_id: str
+    evidence_item_id: str
+    score: float
+    summary: str
+    title: str
+    section_label: str | None = None
+    text_excerpt: str
+    source_type: str | None = None
+    captured_at: datetime | None = None
+
+
+class EvidenceSearchResponse(AuditFlowModel):
+    cycle_id: str
+    workspace_id: str
+    query: str
+    total_count: int
+    items: list[EvidenceSearchItem] = Field(default_factory=list)
+
+
+class MemoryRecordSummary(AuditFlowModel):
+    memory_id: str
+    scope: str
+    subject_type: str
+    subject_id: str | None = None
+    memory_key: str
+    memory_type: str
+    value: dict[str, Any] = Field(default_factory=dict)
+    confidence: float | None = None
+    source_kind: str
+    source_ref: dict[str, Any] | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class MemoryRecordListResponse(AuditFlowModel):
+    cycle_id: str
+    workspace_id: str
+    total_count: int
+    items: list[MemoryRecordSummary] = Field(default_factory=list)
+
+
 class NarrativeSummary(AuditFlowModel):
     narrative_id: str
     narrative_type: str

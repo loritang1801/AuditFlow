@@ -22,10 +22,12 @@ from auditflow_app.bootstrap import build_app_service
 from auditflow_app.repository import (
     ArtifactBlobRow,
     AuditCycleRow,
+    EmbeddingChunkRow,
     EvidenceChunkRow,
     EvidenceRow,
     ExportPackageRow,
     MappingRow,
+    MemoryRecordRow,
     ReviewDecisionRow,
 )
 from auditflow_app.sample_payloads import (
@@ -974,6 +976,72 @@ class AuditFlowServiceTests(unittest.TestCase):
 
         evidence = service.get_evidence(evidence_row.evidence_id)
         self.assertIn("reviews/access-review.csv", evidence.summary)
+
+    def test_import_processing_indexes_chunks_for_evidence_search(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        xlsx_bytes = _xlsx_with_rows(
+            [
+                ["reviewer", "system", "status"],
+                ["Security Engineering", "break-glass", "approved"],
+            ]
+        )
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-search-xlsx-1",
+                display_name="Searchable Access Review XLSX",
+                artifact_text=None,
+                artifact_bytes_base64=base64.b64encode(xlsx_bytes).decode("ascii"),
+            )
+            | {"source_locator": "uploads/searchable-access-review.xlsx"},
+        )
+        service.dispatch_import_jobs()
+        results = service.search_evidence("cycle-1", query="break glass approved", limit=5)
+
+        with service.repository.session_factory() as session:
+            indexed_rows = session.scalars(
+                select(EmbeddingChunkRow)
+                .where(EmbeddingChunkRow.workspace_id == "audit-ws-1")
+                .where(EmbeddingChunkRow.subject_type == "audit_evidence")
+                .where(EmbeddingChunkRow.model_name == "lexical-v1")
+            ).all()
+
+        self.assertGreaterEqual(len(indexed_rows), 2)
+        self.assertGreaterEqual(results.total_count, 1)
+        self.assertEqual(results.items[0].title, "Searchable Access Review XLSX")
+        self.assertIn("break-glass", results.items[0].text_excerpt)
+
+    def test_mapping_and_gap_reviews_record_memory_context(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command(comment="Accepted reviewer pattern."))
+        service.decide_gap("gap-1", gap_decision_command(comment="Resolved after new upload."))
+        organization_memory = service.list_memory_records(
+            "cycle-1",
+            scope="organization",
+            subject_type="framework_control",
+        )
+        cycle_memory = service.list_memory_records(
+            "cycle-1",
+            scope="cycle",
+            subject_type="audit_cycle",
+        )
+
+        with service.repository.session_factory() as session:
+            stored_rows = session.scalars(select(MemoryRecordRow).order_by(MemoryRecordRow.created_at.asc())).all()
+
+        self.assertEqual(len(stored_rows), 3)
+        self.assertEqual(organization_memory.total_count, 1)
+        self.assertEqual(organization_memory.items[0].memory_key, "mapping:mapping-1")
+        self.assertEqual(organization_memory.items[0].value["decision"], "accept")
+        self.assertEqual(organization_memory.items[0].value["control_code"], "CC6.1")
+        self.assertIn("Quarterly access review", organization_memory.items[0].value["evidence_summary"])
+        self.assertEqual(cycle_memory.total_count, 2)
+        self.assertTrue(any(item.memory_key == "mapping:mapping-1" for item in cycle_memory.items))
+        self.assertTrue(any(item.memory_key == "gap:gap-1" for item in cycle_memory.items))
 
     def test_mapping_and_gap_reviews_append_review_decision_audit_rows(self) -> None:
         service = build_app_service()

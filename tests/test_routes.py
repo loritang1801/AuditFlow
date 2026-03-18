@@ -11,7 +11,14 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from auditflow_app.api_models import AuditCycleSummary, AuditWorkspaceSummary
+from auditflow_app.api_models import (
+    AuditCycleSummary,
+    AuditWorkspaceSummary,
+    EvidenceSearchItem,
+    EvidenceSearchResponse,
+    MemoryRecordListResponse,
+    MemoryRecordSummary,
+)
 from auditflow_app.auth import AuditFlowAuthorizationError, HeaderAuditFlowAuthorizer
 from auditflow_app.routes import (
     _event_topics,
@@ -135,6 +142,15 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
 
         self.assertEqual(status_code, 400)
         self.assertEqual(payload["error"]["code"], "INVALID_ARTIFACT_BYTES")
+
+    def test_maps_invalid_search_query_to_400(self) -> None:
+        status_code, payload = map_domain_error(
+            ValueError("INVALID_SEARCH_QUERY"),
+            path="/api/v1/auditflow/cycles/cycle-1/evidence-search",
+        )
+
+        self.assertEqual(status_code, 400)
+        self.assertEqual(payload["error"]["code"], "INVALID_SEARCH_QUERY")
 
     def test_resolves_sse_event_context_from_runtime_state(self) -> None:
         state_store = SimpleNamespace(
@@ -350,6 +366,26 @@ class AuditFlowRouteAuthorizationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["data"]["id"], "ws-1")
 
+    def test_viewer_route_allows_evidence_search(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/cycles/cycle-1/evidence-search",
+            params={"query": "access review"},
+            headers=_auth_headers(role="viewer"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["total_count"], 1)
+        self.assertEqual(response.json()["data"]["items"][0]["evidence_chunk_id"], "chunk-1")
+
+    def test_memory_records_route_requires_reviewer_role(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/cycles/cycle-1/memory-records",
+            headers=_auth_headers(role="viewer"),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "AUTH_FORBIDDEN")
+
 
 def _auth_headers(*, role: str) -> dict[str, str]:
     return {
@@ -380,6 +416,47 @@ def _stub_service():
         review_queue_count=0,
         open_gap_count=0,
     )
+    search_response = EvidenceSearchResponse(
+        cycle_id="cycle-1",
+        workspace_id="ws-1",
+        query="access review",
+        total_count=1,
+        items=[
+            EvidenceSearchItem(
+                evidence_chunk_id="chunk-1",
+                evidence_item_id="evidence-1",
+                score=1.8,
+                summary="Quarterly access review completed.",
+                title="Jira Access Review Ticket",
+                section_label="Description",
+                text_excerpt="Quarterly access review completed for production systems.",
+                source_type="jira",
+                captured_at=created_at,
+            )
+        ],
+    )
+    memory_response = MemoryRecordListResponse(
+        cycle_id="cycle-1",
+        workspace_id="ws-1",
+        total_count=1,
+        items=[
+            MemoryRecordSummary(
+                memory_id="memory-1",
+                scope="organization",
+                subject_type="framework_control",
+                subject_id="SOC2:CC6.1",
+                memory_key="mapping:mapping-1",
+                memory_type="pattern",
+                value={"decision": "accept", "control_code": "CC6.1"},
+                confidence=1.0,
+                source_kind="human_feedback",
+                source_ref={"mapping_id": "mapping-1"},
+                status="active",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        ],
+    )
     return SimpleNamespace(
         list_workflows=lambda: [],
         get_workflow_state=lambda workflow_run_id: {
@@ -393,6 +470,8 @@ def _stub_service():
         get_workspace=lambda workspace_id: workspace,
         create_cycle=lambda command, idempotency_key=None: cycle,
         list_cycles=lambda workspace_id, status=None: [cycle],
+        search_evidence=lambda cycle_id, query, limit=5: search_response.model_copy(update={"query": query}),
+        list_memory_records=lambda cycle_id, **filters: memory_response,
     )
 
 

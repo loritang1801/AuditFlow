@@ -47,8 +47,7 @@ Implemented:
 Missing or partial:
 
 1. Binary parsing still lacks production-grade OCR plus broader DOC/XLS/PPT/archive coverage beyond the current heuristic ZIP/OpenXML support.
-2. No embedding/index persistence path yet.
-3. External connectors still use synthetic payload capture rather than live pulls.
+2. External connectors still use synthetic payload capture rather than live pulls.
 
 ### 4. Reviewer Workflow and Audit Trail
 
@@ -68,14 +67,19 @@ Missing or partial:
 
 ### 5. Retrieval, Memory, and Prompt Grounding
 
-Status: not started
+Status: partially implemented
+
+Implemented:
+
+1. Evidence chunk materialization now also persists a lexical retrieval index in the product repository.
+2. Product service/routes now expose cycle-scoped evidence search for retrieval debugging and reviewer workflows.
+3. Reviewer mapping and gap decisions now materialize organization/cycle memory records sourced from human feedback.
 
 Missing or partial:
 
-1. No hybrid retrieval layer wired into the product repository.
-2. No organization/cycle memory surfaced from AuditFlow code.
-3. Prompt bundles are defined in docs and shared runtime, but product-side
-   retrieval inputs are still demo-grade.
+1. Retrieval is still lexical-only; semantic/vector ranking and true hybrid search are not implemented yet.
+2. Memory records are inspectable, but mapper/skeptic prompt assembly still does not automatically consume them.
+3. Memory compaction, dedupe policy beyond stable keys, and broader subject scopes are still demo-grade.
 
 ### 6. Export and Snapshot Governance
 
@@ -121,4 +125,4 @@ Missing or partial:
 
 ## Active Step
 
-Step 7 is the current implementation target.
+Step 5 is the current implementation target, with Step 7 auth/platform work still open in parallel.
