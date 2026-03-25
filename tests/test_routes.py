@@ -12,12 +12,20 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from auditflow_app.api_models import (
+    AuditCycleDashboardResponse,
     AuditCycleSummary,
     AuditWorkspaceSummary,
+    ControlCoverageSummary,
+    ControlDetailResponse,
     EvidenceSearchItem,
     EvidenceSearchResponse,
     MemoryRecordListResponse,
     MemoryRecordSummary,
+    ReviewQueueItem,
+    ReviewQueueResponse,
+    ToolAccessAuditListResponse,
+    ToolAccessAuditSummary,
+    ToolAccessSummary,
 )
 from auditflow_app.auth import AuditFlowAuthorizationError, HeaderAuditFlowAuthorizer
 from auditflow_app.routes import (
@@ -366,6 +374,25 @@ class AuditFlowRouteAuthorizationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["data"]["id"], "ws-1")
 
+    def test_runtime_capabilities_route_requires_product_admin_access(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/runtime-capabilities",
+            headers=_auth_headers(role="reviewer"),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "AUTH_FORBIDDEN")
+
+    def test_runtime_capabilities_route_returns_capability_payload_for_admin(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/runtime-capabilities",
+            headers=_auth_headers(role="org_admin"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["product"], "auditflow")
+        self.assertEqual(response.json()["data"]["vector_search"]["backend_id"], "ann-metadata-json")
+
     def test_viewer_route_allows_evidence_search(self) -> None:
         response = self.client.get(
             "/api/v1/auditflow/cycles/cycle-1/evidence-search",
@@ -385,6 +412,109 @@ class AuditFlowRouteAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["error"]["code"], "AUTH_FORBIDDEN")
+
+    def test_reviewer_route_allows_mapping_claim(self) -> None:
+        response = self.client.post(
+            "/api/v1/auditflow/mappings/mapping-1/claim",
+            headers={
+                **_auth_headers(role="reviewer"),
+                "Idempotency-Key": "claim-1",
+            },
+            json={"lease_seconds": 600},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["mapping_id"], "mapping-1")
+        self.assertEqual(response.json()["data"]["claimed_by_user_id"], "user-1")
+
+    def test_reviewer_route_lists_tool_access_audit(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/tool-access-audit",
+            params={"workflow_run_id": "wf-tool-1", "tool_name": "evidence.search"},
+            headers=_auth_headers(role="reviewer"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["total_count"], 1)
+        self.assertEqual(response.json()["data"]["items"][0]["workflow_run_id"], "wf-tool-1")
+        self.assertEqual(response.json()["data"]["items"][0]["tool_name"], "evidence.search")
+
+    def test_viewer_route_returns_cycle_dashboard_with_tool_access_summary(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/cycles/cycle-1/dashboard",
+            headers=_auth_headers(role="viewer"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["cycle"]["id"], "cycle-1")
+        self.assertEqual(response.json()["data"]["tool_access_summary"]["total_count"], 2)
+        self.assertEqual(response.json()["data"]["tool_access_summary"]["latest_workflow_run_id"], "wf-tool-2")
+
+    def test_reviewer_route_lists_cycle_tool_access_audit(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/cycles/cycle-1/tool-access-audit",
+            params={"workflow_run_id": "wf-tool-2", "tool_name": "mapping.read_candidates"},
+            headers=_auth_headers(role="reviewer"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["total_count"], 1)
+        self.assertEqual(response.json()["data"]["items"][0]["workflow_run_id"], "wf-tool-2")
+        self.assertEqual(response.json()["data"]["items"][0]["tool_name"], "mapping.read_candidates")
+
+    def test_viewer_route_returns_control_detail_with_tool_access_summary(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/cycles/cycle-1/controls/control-state-1",
+            headers=_auth_headers(role="viewer"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["control_state"]["control_code"], "CC6.1")
+        self.assertEqual(response.json()["data"]["tool_access_summary"]["total_count"], 2)
+        self.assertEqual(
+            response.json()["data"]["tool_access_summary"]["latest_workflow_run_id"],
+            "wf-tool-3",
+        )
+
+    def test_reviewer_route_lists_control_tool_access_audit(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/cycles/cycle-1/controls/control-state-1/tool-access-audit",
+            params={"tool_name": "mapping.read_candidates"},
+            headers=_auth_headers(role="reviewer"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["total_count"], 1)
+        self.assertEqual(response.json()["data"]["items"][0]["workflow_run_id"], "wf-tool-2")
+        self.assertEqual(response.json()["data"]["items"][0]["tool_name"], "mapping.read_candidates")
+
+    def test_reviewer_route_returns_review_queue_with_mapping_tool_access_summary(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/review-queue",
+            params={"cycle_id": "cycle-1"},
+            headers=_auth_headers(role="reviewer"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["data"]), 1)
+        self.assertEqual(response.json()["data"][0]["mapping_id"], "mapping-1")
+        self.assertEqual(response.json()["data"][0]["tool_access_summary"]["total_count"], 2)
+        self.assertEqual(
+            response.json()["data"][0]["tool_access_summary"]["latest_workflow_run_id"],
+            "wf-tool-3",
+        )
+
+    def test_reviewer_route_lists_mapping_tool_access_audit(self) -> None:
+        response = self.client.get(
+            "/api/v1/auditflow/mappings/mapping-1/tool-access-audit",
+            params={"tool_name": "mapping.read_candidates"},
+            headers=_auth_headers(role="reviewer"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["total_count"], 1)
+        self.assertEqual(response.json()["data"]["items"][0]["workflow_run_id"], "wf-tool-2")
+        self.assertEqual(response.json()["data"]["items"][0]["tool_name"], "mapping.read_candidates")
 
 
 def _auth_headers(*, role: str) -> dict[str, str]:
@@ -457,21 +587,277 @@ def _stub_service():
             )
         ],
     )
+    tool_access_response = ToolAccessAuditListResponse(
+        total_count=1,
+        items=[
+            ToolAccessAuditSummary(
+                tool_access_audit_id="tool-access-1",
+                workflow_run_id="wf-tool-1",
+                node_name="mapping",
+                tool_call_id="tool-call-1",
+                tool_name="evidence.search",
+                tool_version="2026-03-16.1",
+                adapter_type="vector_store",
+                subject_type="audit_cycle",
+                subject_id="cycle-1",
+                workspace_id="ws-1",
+                user_id="user-1",
+                role="reviewer",
+                session_id="auth-session-1",
+                connection_id=None,
+                execution_status="success",
+                error_code=None,
+                arguments={"query": "access review", "limit": 5},
+                source_locator="auditflow://cycles/cycle-1/evidence-search?query=access review",
+                recorded_at=created_at,
+                completed_at=created_at,
+            )
+        ],
+    )
+    cycle_tool_access_response = ToolAccessAuditListResponse(
+        total_count=1,
+        items=[
+            ToolAccessAuditSummary(
+                tool_access_audit_id="tool-access-2",
+                workflow_run_id="wf-tool-2",
+                node_name="challenge",
+                tool_call_id="tool-call-2",
+                tool_name="mapping.read_candidates",
+                tool_version="2026-03-16.1",
+                adapter_type="auditflow_database",
+                subject_type="audit_cycle",
+                subject_id="cycle-1",
+                workspace_id="ws-1",
+                user_id="user-2",
+                role="reviewer",
+                session_id="auth-session-2",
+                connection_id=None,
+                execution_status="success",
+                error_code=None,
+                arguments={"control_id": "control-state-1"},
+                source_locator="auditflow://cycles/cycle-1/mappings",
+                recorded_at=created_at,
+                completed_at=created_at,
+            )
+        ],
+    )
+    control_tool_access_response = ToolAccessAuditListResponse(
+        total_count=1,
+        items=[
+            ToolAccessAuditSummary(
+                tool_access_audit_id="tool-access-3",
+                workflow_run_id="wf-tool-2",
+                node_name="challenge",
+                tool_call_id="tool-call-3",
+                tool_name="mapping.read_candidates",
+                tool_version="2026-03-16.1",
+                adapter_type="auditflow_database",
+                subject_type="audit_cycle",
+                subject_id="cycle-1",
+                workspace_id="ws-1",
+                user_id="user-2",
+                role="reviewer",
+                session_id="auth-session-2",
+                connection_id=None,
+                execution_status="success",
+                error_code=None,
+                arguments={"control_id": "control-state-1"},
+                source_locator="auditflow://cycles/cycle-1/mappings",
+                recorded_at=created_at,
+                completed_at=created_at,
+            )
+        ],
+    )
+    mapping_tool_access_response = ToolAccessAuditListResponse(
+        total_count=1,
+        items=[
+            ToolAccessAuditSummary(
+                tool_access_audit_id="tool-access-4",
+                workflow_run_id="wf-tool-2",
+                node_name="challenge",
+                tool_call_id="tool-call-4",
+                tool_name="mapping.read_candidates",
+                tool_version="2026-03-16.1",
+                adapter_type="auditflow_database",
+                subject_type="audit_cycle",
+                subject_id="cycle-1",
+                workspace_id="ws-1",
+                user_id="user-2",
+                role="reviewer",
+                session_id="auth-session-2",
+                connection_id=None,
+                execution_status="success",
+                error_code=None,
+                arguments={"evidence_item_id": "evidence-1", "control_id": "control-state-1"},
+                source_locator="auditflow://cycles/cycle-1/mappings",
+                recorded_at=created_at,
+                completed_at=created_at,
+            )
+        ],
+    )
+    dashboard = AuditCycleDashboardResponse(
+        cycle=cycle,
+        review_queue_count=0,
+        open_gap_count=0,
+        accepted_mapping_count=1,
+        export_ready=False,
+        controls=[],
+        latest_export_package=None,
+        tool_access_summary=ToolAccessSummary(
+            total_count=2,
+            latest_completed_at=created_at,
+            latest_workflow_run_id="wf-tool-2",
+            recent_tool_names=["mapping.read_candidates", "evidence.search"],
+            execution_status_counts={"success": 2},
+        ),
+    )
+    control_detail = ControlDetailResponse(
+        control_state=ControlCoverageSummary(
+            control_state_id="control-state-1",
+            control_code="CC6.1",
+            coverage_status="pending_review",
+            mapped_evidence_count=1,
+            open_gap_count=0,
+        ),
+        accepted_mappings=[],
+        pending_mappings=[],
+        open_gaps=[],
+        tool_access_summary=ToolAccessSummary(
+            total_count=2,
+            latest_completed_at=created_at,
+            latest_workflow_run_id="wf-tool-3",
+            recent_tool_names=["review_decision.read_history", "mapping.read_candidates"],
+            execution_status_counts={"success": 2},
+        ),
+    )
+    review_queue = ReviewQueueResponse(
+        cycle_id="cycle-1",
+        total_count=1,
+        items=[
+            ReviewQueueItem(
+                mapping_id="mapping-1",
+                control_state_id="control-state-1",
+                control_code="CC6.1",
+                coverage_status="pending_review",
+                snapshot_version=1,
+                evidence_item_id="evidence-1",
+                rationale_summary="Candidate mapping awaiting reviewer confirmation.",
+                citation_refs=[],
+                claimed_by_user_id=None,
+                claimed_at=None,
+                claim_expires_at=None,
+                claim_status="unclaimed",
+                updated_at=created_at,
+                tool_access_summary=ToolAccessSummary(
+                    total_count=2,
+                    latest_completed_at=created_at,
+                    latest_workflow_run_id="wf-tool-3",
+                    recent_tool_names=["review_decision.read_history", "mapping.read_candidates"],
+                    execution_status_counts={"success": 2},
+                ),
+            )
+        ],
+    )
     return SimpleNamespace(
         list_workflows=lambda: [],
-        get_workflow_state=lambda workflow_run_id: {
+        get_workflow_state=lambda workflow_run_id, organization_id=None: {
             "workflow_run_id": workflow_run_id,
             "workflow_type": "auditflow_cycle",
             "current_state": "reviewing",
             "checkpoint_seq": 1,
             "raw_state": {},
         },
-        create_workspace=lambda command: workspace,
-        get_workspace=lambda workspace_id: workspace,
-        create_cycle=lambda command, idempotency_key=None: cycle,
-        list_cycles=lambda workspace_id, status=None: [cycle],
-        search_evidence=lambda cycle_id, query, limit=5: search_response.model_copy(update={"query": query}),
+        create_workspace=lambda command, organization_id=None: workspace,
+        get_workspace=lambda workspace_id, organization_id=None: workspace,
+        get_runtime_capabilities=lambda: {
+            "product": "auditflow",
+            "model_provider": {
+                "requested_mode": "auto",
+                "effective_mode": "local",
+                "backend_id": "heuristic-local",
+                "fallback_reason": "MODEL_PROVIDER_NOT_CONFIGURED",
+                "details": {},
+            },
+            "embedding_provider": {
+                "requested_mode": "auto",
+                "effective_mode": "local",
+                "backend_id": "semantic-v1",
+                "fallback_reason": "OPENAI_EMBEDDING_NOT_CONFIGURED",
+                "details": {},
+            },
+            "vector_search": {
+                "requested_mode": "auto",
+                "effective_mode": "ann",
+                "backend_id": "ann-metadata-json",
+                "fallback_reason": None,
+                "details": {},
+            },
+            "connectors": {
+                "jira": {
+                    "requested_mode": "auto",
+                    "effective_mode": "local",
+                    "backend_id": "jira-synthetic",
+                    "fallback_reason": "CONNECTOR_HTTP_TEMPLATE_NOT_CONFIGURED",
+                    "details": {},
+                }
+            },
+        },
+        create_cycle=lambda command, idempotency_key=None, organization_id=None: cycle,
+        list_cycles=lambda workspace_id, status=None, organization_id=None: [cycle],
+        get_cycle_dashboard=lambda cycle_id, organization_id=None: dashboard,
+        list_controls=lambda cycle_id, coverage_status=None, search=None, organization_id=None: [],
+        list_mappings=lambda cycle_id, control_state_id=None, mapping_status=None, organization_id=None: SimpleNamespace(items=[]),
+        get_control_detail=lambda control_state_id, organization_id=None: control_detail,
+        get_evidence=lambda evidence_id, organization_id=None: SimpleNamespace(model_dump=lambda **kwargs: {}),
+        search_evidence=lambda cycle_id, query, limit=5, organization_id=None: search_response.model_copy(update={"query": query}),
         list_memory_records=lambda cycle_id, **filters: memory_response,
+        list_gaps=lambda cycle_id, status=None, severity=None, organization_id=None: [],
+        list_review_queue=lambda cycle_id, control_state_id=None, severity=None, claim_state=None, sort="recent", organization_id=None, viewer_user_id=None: review_queue,
+        list_review_decisions=lambda cycle_id, mapping_id=None, gap_id=None, organization_id=None: SimpleNamespace(items=[]),
+        list_tool_access_audit=lambda workflow_run_id=None, user_id=None, tool_name=None, subject_type=None, subject_id=None, execution_status=None, organization_id=None: tool_access_response,
+        list_cycle_tool_access_audit=lambda cycle_id, workflow_run_id=None, user_id=None, tool_name=None, execution_status=None, organization_id=None: cycle_tool_access_response,
+        list_control_tool_access_audit=lambda control_state_id, workflow_run_id=None, user_id=None, tool_name=None, execution_status=None, organization_id=None: control_tool_access_response,
+        list_mapping_tool_access_audit=lambda mapping_id, workflow_run_id=None, user_id=None, tool_name=None, execution_status=None, organization_id=None: mapping_tool_access_response,
+        list_imports=lambda cycle_id, ingest_status=None, source_type=None, organization_id=None: SimpleNamespace(items=[]),
+        create_upload_import=lambda cycle_id, command, idempotency_key=None, organization_id=None, auth_context=None: SimpleNamespace(
+            workflow_run_id="wf-1",
+            model_dump=lambda **kwargs: {"workflow_run_id": "wf-1"},
+        ),
+        create_external_import=lambda cycle_id, command, idempotency_key=None, organization_id=None, auth_context=None: SimpleNamespace(
+            workflow_run_id="wf-2",
+            model_dump=lambda **kwargs: {"workflow_run_id": "wf-2"},
+        ),
+        claim_mapping=lambda mapping_id, command, idempotency_key=None, organization_id=None, reviewer_id=None: SimpleNamespace(
+            model_dump=lambda **kwargs: {
+                "mapping_id": mapping_id,
+                "mapping_status": "proposed",
+                "claimed_by_user_id": reviewer_id,
+                "claimed_at": created_at,
+                "claim_expires_at": created_at,
+                "claim_status": "claimed_by_me",
+            }
+        ),
+        release_mapping_claim=lambda mapping_id, command=None, idempotency_key=None, organization_id=None, reviewer_id=None: SimpleNamespace(
+            model_dump=lambda **kwargs: {
+                "mapping_id": mapping_id,
+                "mapping_status": "proposed",
+                "claimed_by_user_id": None,
+                "claimed_at": None,
+                "claim_expires_at": None,
+                "claim_status": "unclaimed",
+            }
+        ),
+        review_mapping=lambda mapping_id, command, idempotency_key=None, organization_id=None, reviewer_id=None: SimpleNamespace(model_dump=lambda **kwargs: {}),
+        decide_gap=lambda gap_id, command, idempotency_key=None, organization_id=None, reviewer_id=None: SimpleNamespace(model_dump=lambda **kwargs: {}),
+        list_narratives=lambda cycle_id, snapshot_version=None, narrative_type=None, organization_id=None: [],
+        process_cycle=lambda command, organization_id=None, auth_context=None: SimpleNamespace(model_dump=lambda **kwargs: {}),
+        list_export_packages=lambda cycle_id, snapshot_version=None, status=None, organization_id=None: [],
+        create_export_package=lambda cycle_id, command, idempotency_key=None, organization_id=None, auth_context=None: SimpleNamespace(
+            workflow_run_id="wf-3",
+            model_dump=lambda **kwargs: {"workflow_run_id": "wf-3"},
+        ),
+        generate_export=lambda command, organization_id=None, auth_context=None: SimpleNamespace(model_dump=lambda **kwargs: {}),
+        get_export_package=lambda package_id, organization_id=None: SimpleNamespace(model_dump=lambda **kwargs: {}),
     )
 
 

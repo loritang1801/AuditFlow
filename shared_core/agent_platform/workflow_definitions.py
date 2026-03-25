@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from .workflow_registry import WorkflowDefinition, WorkflowRegistry
@@ -15,6 +16,155 @@ def _with_overrides(base: dict[str, Any], overrides: dict[str, Any] | None) -> d
     return state
 
 
+def _stable_workflow_entity_id(prefix: str, workflow_run_id: str, *parts: object) -> str:
+    normalized = "||".join("" if part is None else str(part) for part in parts)
+    digest = hashlib.sha256(f"{workflow_run_id}::{normalized}".encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}-{digest}"
+
+
+def _auditflow_control_lookup(context) -> dict[str, dict[str, Any]]:
+    controls = context.prompt_sources.database.get("in_scope_controls", [])
+    lookup: dict[str, dict[str, Any]] = {}
+    for control in controls:
+        if isinstance(control, str):
+            normalized = {
+                "control_state_id": control,
+                "control_code": control,
+            }
+        elif isinstance(control, dict):
+            normalized = dict(control)
+        else:
+            continue
+        for key in ("control_state_id", "control_id", "control_code"):
+            value = normalized.get(key)
+            if value:
+                lookup[str(value)] = normalized
+    return lookup
+
+
+def _build_auditflow_normalization_patch(context, output) -> dict[str, Any]:
+    evidence_item_id = str(
+        context.prompt_sources.workflow_state.get("evidence_item_id")
+        or context.subject_id
+        or "evidence-1"
+    )
+    return {
+        "current_state": "mapping",
+        "parsed_evidence_ids": [evidence_item_id],
+    }
+
+
+def _build_auditflow_mapping_patch(context, output) -> dict[str, Any]:
+    structured_output = (
+        dict(output.structured_output)
+        if isinstance(output.structured_output, dict)
+        else {}
+    )
+    control_lookup = _auditflow_control_lookup(context)
+    evidence_item_id = str(context.prompt_sources.workflow_state.get("evidence_item_id") or "evidence-1")
+    mapping_payloads: list[dict[str, Any]] = []
+    for index, candidate in enumerate(structured_output.get("mapping_candidates", [])):
+        if not isinstance(candidate, dict):
+            continue
+        control_reference = (
+            candidate.get("control_state_id")
+            or candidate.get("control_code")
+            or candidate.get("control_id")
+        )
+        resolved_control = (
+            control_lookup.get(str(control_reference))
+            if control_reference is not None
+            else None
+        ) or {}
+        control_state_id = str(
+            resolved_control.get("control_state_id")
+            or control_reference
+            or f"control-{index + 1}"
+        )
+        control_code = str(
+            resolved_control.get("control_code")
+            or candidate.get("control_code")
+            or control_state_id
+        )
+        mapping_id = _stable_workflow_entity_id(
+            "mapping",
+            context.workflow_run_id,
+            context.subject_id,
+            evidence_item_id,
+            control_state_id,
+            index,
+        )
+        mapping_payloads.append(
+            {
+                "mapping_id": mapping_id,
+                "control_state_id": control_state_id,
+                "control_code": control_code,
+                "confidence": candidate.get("confidence"),
+                "ranking_score": candidate.get("ranking_score"),
+                "rationale_summary": candidate.get("rationale"),
+                "citation_refs": (
+                    [dict(item) for item in candidate.get("citation_refs", []) if isinstance(item, dict)]
+                    if isinstance(candidate.get("citation_refs"), list)
+                    else []
+                ),
+            }
+        )
+    return {
+        "current_state": "challenge",
+        "proposed_mapping_ids": [
+            str(payload["mapping_id"])
+            for payload in mapping_payloads
+            if payload.get("mapping_id") is not None
+        ],
+        "mapping_payloads": mapping_payloads,
+    }
+
+
+def _build_auditflow_challenge_patch(context, output) -> dict[str, Any]:
+    structured_output = (
+        dict(output.structured_output)
+        if isinstance(output.structured_output, dict)
+        else {}
+    )
+    flagged_mapping_ids = [
+        str(item["mapping_id"])
+        for item in structured_output.get("mapping_flags", [])
+        if isinstance(item, dict) and item.get("mapping_id") is not None
+    ]
+    return {
+        "current_state": "human_review",
+        "flagged_mapping_ids": flagged_mapping_ids,
+    }
+
+
+def _build_auditflow_export_patch(context, output) -> dict[str, Any]:
+    structured_output = (
+        dict(output.structured_output)
+        if isinstance(output.structured_output, dict)
+        else {}
+    )
+    narrative_ids: list[str] = []
+    snapshot_version = context.prompt_sources.workflow_state.get("working_snapshot_version")
+    for index, narrative in enumerate(structured_output.get("narratives", [])):
+        if not isinstance(narrative, dict):
+            continue
+        narrative_ids.append(
+            _stable_workflow_entity_id(
+                "narrative",
+                context.workflow_run_id,
+                context.subject_id,
+                snapshot_version,
+                narrative.get("control_state_id"),
+                narrative.get("narrative_type"),
+                index,
+            )
+        )
+    return {
+        "current_state": "exported",
+        "narrative_ids": narrative_ids,
+    }
+
+
 def _build_auditflow_processing_state(
     workflow_run_id: str,
     payload: dict[str, Any],
@@ -23,7 +173,7 @@ def _build_auditflow_processing_state(
     return _with_overrides(
         {
             "organization_id": payload.get("organization_id", "org-1"),
-            "workspace_id": payload.get("workspace_id", "ws-1"),
+            "workspace_id": payload.get("workspace_id", payload.get("audit_workspace_id", "ws-1")),
             "subject_type": "audit_cycle",
             "subject_id": payload["audit_cycle_id"],
             "aggregate_type": "audit_cycle",
@@ -45,6 +195,8 @@ def _build_auditflow_processing_state(
             "framework_name": payload.get("framework_name", "SOC2"),
             "proposed_mapping_ids": payload.get("proposed_mapping_ids", []),
             "mapping_payloads": payload.get("mapping_payloads", []),
+            "mapping_memory_context": payload.get("mapping_memory_context", []),
+            "challenge_memory_context": payload.get("challenge_memory_context", []),
             "freshness_policy": payload.get("freshness_policy", {"mode": "standard"}),
             "control_text": payload.get("control_text", ""),
         },
@@ -60,7 +212,7 @@ def _build_auditflow_export_state(
     return _with_overrides(
         {
             "organization_id": payload.get("organization_id", "org-1"),
-            "workspace_id": payload.get("workspace_id", "ws-1"),
+            "workspace_id": payload.get("workspace_id", payload.get("audit_workspace_id", "ws-1")),
             "subject_type": "audit_cycle",
             "subject_id": payload["audit_cycle_id"],
             "aggregate_type": "audit_cycle",
@@ -161,10 +313,7 @@ def build_workflow_registry() -> WorkflowRegistry:
                         node_name="normalization",
                         node_kind="analysis",
                         success_events=["auditflow.evidence.normalized"],
-                        state_patch_builder=lambda context, output: {
-                            "current_state": "mapping",
-                            "parsed_evidence_ids": ["evidence-1"],
-                        },
+                        state_patch_builder=_build_auditflow_normalization_patch,
                     ),
                 ),
                 WorkflowStep(
@@ -176,10 +325,7 @@ def build_workflow_registry() -> WorkflowRegistry:
                         node_name="mapping",
                         node_kind="analysis",
                         success_events=["auditflow.mapping.generated"],
-                        state_patch_builder=lambda context, output: {
-                            "current_state": "challenge",
-                            "proposed_mapping_ids": ["mapping-1"],
-                        },
+                        state_patch_builder=_build_auditflow_mapping_patch,
                     ),
                 ),
                 WorkflowStep(
@@ -191,10 +337,7 @@ def build_workflow_registry() -> WorkflowRegistry:
                         node_name="challenge",
                         node_kind="analysis",
                         success_events=["auditflow.mapping.flagged"],
-                        state_patch_builder=lambda context, output: {
-                            "current_state": "human_review",
-                            "flagged_mapping_ids": ["mapping-1"],
-                        },
+                        state_patch_builder=_build_auditflow_challenge_patch,
                     ),
                 ),
             ],
@@ -204,6 +347,7 @@ def build_workflow_registry() -> WorkflowRegistry:
                         "audit_cycle_id": state["audit_cycle_id"],
                         "source_id": state["source_id"],
                         "source_type": state["source_type"],
+                        "evidence_item_id": state["evidence_item_id"],
                     },
                     database={
                         "artifact_id": state["artifact_id"],
@@ -217,6 +361,7 @@ def build_workflow_registry() -> WorkflowRegistry:
                         "evidence_item_id": state["evidence_item_id"],
                     },
                     retrieval={"evidence_chunk_refs": state["evidence_chunk_refs"]},
+                    memory={"accepted_pattern_memories": state.get("mapping_memory_context", [])},
                     database={
                         "in_scope_controls": state["in_scope_controls"],
                         "framework_name": state["framework_name"],
@@ -224,6 +369,7 @@ def build_workflow_registry() -> WorkflowRegistry:
                 ),
                 "challenge": lambda state: PromptAssemblySources(
                     workflow_state={"proposed_mapping_ids": state["proposed_mapping_ids"]},
+                    memory={"challenge_pattern_memories": state.get("challenge_memory_context", [])},
                     database={
                         "mapping_payloads": state["mapping_payloads"],
                         "control_text": state["control_text"],
@@ -250,10 +396,7 @@ def build_workflow_registry() -> WorkflowRegistry:
                         node_name="package_generation",
                         node_kind="generation",
                         success_events=["auditflow.package.ready"],
-                        state_patch_builder=lambda context, output: {
-                            "current_state": "exported",
-                            "narrative_ids": ["narrative-1"],
-                        },
+                        state_patch_builder=_build_auditflow_export_patch,
                     ),
                 )
             ],

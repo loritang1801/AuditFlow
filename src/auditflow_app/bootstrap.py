@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .auth import AuditFlowAuthorizer
+from .auth import AuditFlowAuthorizer, SqlAlchemyAuditFlowAuthService
+from .product_gateway import AuditFlowProductModelGateway
 from .replay_harness import AuditFlowReplayHarness
 from .repository import SqlAlchemyAuditFlowRepository
 from .shared_runtime import load_shared_agent_platform
 from .service import AuditFlowAppService
+from .tool_adapters import register_auditflow_product_tool_adapters
 from .worker import AuditFlowImportWorker, AuditFlowImportWorkerSupervisor
 
 SUPPORTED_WORKFLOW_NAMES = (
@@ -30,15 +32,43 @@ def list_supported_workflows() -> tuple[str, ...]:
 
 def build_runtime_components(*, database_url: str | None = None) -> dict[str, Any]:
     ap, registry = _build_registry()
-    components = ap.build_demo_runtime_components(database_url=database_url)
-    components["repository"] = SqlAlchemyAuditFlowRepository.from_runtime_stores(components["runtime_stores"])
-    components["workflow_registry"] = registry
-    components["api_service"] = ap.WorkflowApiService(
-        registry,
-        components["execution_service"],
-        runtime_stores=components["runtime_stores"],
+    catalog = ap.build_default_runtime_catalog()
+    prompt_service = ap.PromptAssemblyService(catalog)
+    tool_executor = ap.ToolExecutor(catalog)
+    runtime_stores = ap.create_sqlalchemy_runtime_stores(database_url)
+    repository = SqlAlchemyAuditFlowRepository.from_runtime_stores(runtime_stores)
+    auth_service = SqlAlchemyAuditFlowAuthService.from_runtime_stores(runtime_stores)
+    register_auditflow_product_tool_adapters(
+        tool_executor,
+        repository,
     )
-    return components
+    model_gateway = AuditFlowProductModelGateway()
+    execution_service = ap.WorkflowExecutionService(
+        prompt_service,
+        model_gateway=model_gateway,
+        tool_executor=tool_executor,
+        state_store=runtime_stores.state_store,
+        checkpoint_store=runtime_stores.checkpoint_store,
+        replay_store=runtime_stores.replay_store,
+        outbox_store=runtime_stores.outbox_store,
+    )
+    api_service = ap.WorkflowApiService(
+        registry,
+        execution_service,
+        runtime_stores=runtime_stores,
+    )
+    return {
+        "catalog": catalog,
+        "prompt_service": prompt_service,
+        "workflow_registry": registry,
+        "tool_executor": tool_executor,
+        "runtime_stores": runtime_stores,
+        "repository": repository,
+        "auth_service": auth_service,
+        "model_gateway": model_gateway,
+        "execution_service": execution_service,
+        "api_service": api_service,
+    }
 
 
 def build_execution_service(*, database_url: str | None = None):
@@ -57,6 +87,7 @@ def build_app_service(*, database_url: str | None = None) -> AuditFlowAppService
         components["api_service"],
         repository=components["repository"],
         runtime_stores=components["runtime_stores"],
+        auth_service=components["auth_service"],
     )
 
 

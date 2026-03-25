@@ -1,6 +1,6 @@
 # AuditFlow Agent Context
 
-- Date: 2026-03-17
+- Date: 2026-03-20
 - Product: SOC 2 evidence management and audit package generation
 
 ## Completed Design Layers
@@ -41,6 +41,14 @@
 - Review history can now be queried at the cycle level with optional mapping/gap filters for reviewer workbench backends
 - Cycle-level mapping records can now be queried with control/state filters for reviewer workbench backends
 - Product read APIs now include cycle-scoped evidence search plus reviewer-only memory record inspection for retrieval/prompt-grounding debugging
+- Retrieval is now hybrid-style: evidence chunks are indexed into both lexical and semantic retrieval rows, semantic rows now persist dense embedding vectors, and cycle evidence search combines lexical matching with cosine-ranked vector similarity
+- Import-driven cycle processing now builds grounded mapper/skeptic context from real cycle control metadata, historical evidence hits, reviewer-derived memory, and workspace freshness policy instead of fixed demo placeholders
+- Shared AuditFlow workflow definitions now pass accepted/rejection memory context directly into mapper and skeptic prompt assembly sources
+- `auth.py` now provides a SQLAlchemy-backed shared-style auth/session layer with seeded demo users, refresh-session persistence, signed bearer access tokens, `/api/v1/auth/session*` support, and a session-token authorizer used by the real FastAPI app by default
+- Workspace/cycle rows are now organization-scoped, and product routes plus service/repository calls now propagate the authenticated tenant context instead of dropping it after route auth
+- Review decisions now record the authenticated reviewer id instead of a fixed demo reviewer id
+- `tool_adapters.py` now binds AuditFlow tool adapter types to the product repository for artifact reads, evidence search, control lookup, review history, mapping candidate reads, snapshot reads, and export validation, and adapter execution now enforces the tool call's organization/workspace context
+- `bootstrap.py` now assembles a product-specific runtime over the shared catalog/stores instead of starting from `build_demo_runtime_components()`, and `product_gateway.py` provides a deterministic product model gateway with dynamic tool planning for collector/writer steps
 - Cycle list queries now support `status` filtering and import list routes now accept the contract-level `status` query alias
 - Workspace and cycle create/read models now persist contract-facing slug, owner, audit-period, and snapshot timestamp fields while accepting contract request aliases
 - Cycle creation plus upload/external import and export submission now support persisted idempotency keys, and cycle/import list routes now emit shared envelope metadata with cursor pagination
@@ -70,20 +78,29 @@
 ## First Implementation Targets
 
 1. Expand binary parsing beyond the current PDF/image/DOCX/XLSX/ZIP heuristic support into stronger OCR and broader office/archive coverage
-2. Replace the current header-based route auth hook with shared session/token validation
-3. Upgrade retrieval from the current lexical chunk index into true hybrid retrieval with vector search and direct mapper/skeptic prompt consumption
-4. Expand reviewer workbench state/query coverage beyond current review-decision history, evidence search, memory inspection, cycle-level gap/mapping listing, and broader import edge-case coverage
+2. Extract the current product-local session/token auth implementation into a shared platform package
+3. Upgrade the current optional provider-backed embedding path into durable `pgvector`/ANN search infrastructure
+4. Expand reviewer workbench state/query coverage beyond current review-decision history, claim/release handling, evidence search, memory inspection, cycle-level gap/mapping listing, and broader import edge-case coverage
 5. Expand the replay/evaluation harness beyond the current built-in fixture suite and basic saved-baseline catalog into fixture versioning and curated regression packs
 
 ## Resume Point
 
 - Latest completed commit: `fe01ffa` `Add AuditFlow retrieval and memory foundations`
 - Retrieval/memory v1 is now in place: lexical evidence search, persisted chunk index rows, and reviewer-derived organization/cycle memory records
+- Retrieval/prompt-grounding v2 is now in place: hybrid lexical+dense-vector evidence search plus mapper/skeptic memory grounding during import-driven cycle processing
+- Semantic search now also stores ANN-style bucket signatures in chunk metadata and uses two-stage candidate pruning before cosine scoring
+- Product gateway and embeddings now support optional env-configured OpenAI provider paths with automatic fallback to the local heuristic/deterministic implementations
+- Shared session/token validation is now wired into the product app, replacing the real app's previous header-only auth path while keeping the header authorizer as a test/stub fallback
+- Tenant-scoped workspace/cycle enforcement is now wired through routes, service, repository, and product tool adapters
+- Reviewer workbench now supports mapping claim/release leases plus claim-aware queue filtering and cross-reviewer conflict checks
+- External Jira/Confluence imports now support env-configured live HTTP fetch with automatic fallback to the existing synthetic handler payloads
+- Product admin users can now inspect effective model/embedding/vector/connector runtime modes through `/api/v1/auditflow/runtime-capabilities`
+- Product runtime now uses a product-specific gateway/runtime assembly instead of the shared demo bootstrap
 - The next implementation start point should be one of these:
-  1. Upgrade retrieval from lexical-only to true hybrid retrieval with vector/semantic ranking
-  2. Wire memory/retrieval outputs directly into mapper and skeptic prompt assembly
-  3. Replace the local header authorizer with shared session/token validation
-- If continuing the current product track, start with item 1 above before expanding more read APIs
+  1. Upgrade the current provider-backed embedding option into persistent `pgvector`/ANN indexing and retrieval
+  2. Expand tool-backed workflow execution beyond repository reads into live connector/data-source adapters and richer model-provider controls
+  3. Expand reviewer workbench from claim/conflict protection into fuller multi-actor merge, reassignment, and queue prioritization semantics
+- If continuing the current product track, start with item 1 above before deepening more reviewer/UI surfaces
 
 ## Local Note
 

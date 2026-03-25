@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 import zipfile
 
 from sqlalchemy import select
@@ -22,13 +23,16 @@ from auditflow_app.bootstrap import build_app_service
 from auditflow_app.repository import (
     ArtifactBlobRow,
     AuditCycleRow,
+    CycleSnapshotRow,
     EmbeddingChunkRow,
     EvidenceChunkRow,
     EvidenceRow,
     ExportPackageRow,
+    GapRow,
     MappingRow,
     MemoryRecordRow,
     ReviewDecisionRow,
+    SemanticVectorRow,
 )
 from auditflow_app.sample_payloads import (
     cycle_create_command,
@@ -143,6 +147,7 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(dashboard.cycle.cycle_id, cycle.cycle_id)
         self.assertEqual(dashboard.cycle.coverage_status, "not_started")
         self.assertFalse(dashboard.export_ready)
+        self.assertEqual(dashboard.tool_access_summary.total_count, 0)
         self.assertEqual(
             [control.control_code for control in dashboard.controls],
             EXPECTED_SOC2_CONTROL_CODES,
@@ -207,6 +212,27 @@ class AuditFlowServiceTests(unittest.TestCase):
                 }
             )
 
+    def test_workspace_slug_is_scoped_per_organization(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        org_one = service.create_workspace(
+            workspace_create_command(
+                workspace_name="Tenant One Workspace",
+                slug="shared-slug",
+            ),
+            organization_id="org-1",
+        )
+        org_two = service.create_workspace(
+            workspace_create_command(
+                workspace_name="Tenant Two Workspace",
+                slug="shared-slug",
+            ),
+            organization_id="org-2",
+        )
+
+        self.assertNotEqual(org_one.workspace_id, org_two.workspace_id)
+
     def test_create_cycle_is_idempotent_for_repeated_key(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
@@ -261,9 +287,24 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(mappings.total_count, 1)
         self.assertEqual(mappings.items[0].mapping_id, "mapping-1")
         self.assertEqual(review_queue.total_count, 1)
+        self.assertEqual(review_queue.items[0].tool_access_summary.total_count, 0)
         self.assertEqual([control.control_code for control in controls], EXPECTED_SOC2_CONTROL_CODES)
         self.assertEqual(control_detail.control_state.control_code, "CC6.1")
+        self.assertEqual(control_detail.tool_access_summary.total_count, 0)
         self.assertEqual(evidence.evidence_id, "evidence-1")
+
+    def test_tenant_scoping_rejects_cross_organization_reads(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with self.assertRaises(KeyError):
+            service.get_workspace("audit-ws-1", organization_id="org-2")
+
+        with self.assertRaises(KeyError):
+            service.get_cycle_dashboard("cycle-1", organization_id="org-2")
+
+        with self.assertRaises(KeyError):
+            service.search_evidence("cycle-1", query="access review", organization_id="org-2")
 
     def test_new_cycles_inherit_control_catalog_template_set(self) -> None:
         service = build_app_service()
@@ -408,12 +449,83 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(recent.items[0].mapping_id, "mapping-1")
         self.assertEqual(ranking.items[0].mapping_id, "mapping-ranked")
 
+    def test_review_queue_claims_surface_status_and_filters(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        claimed = service.claim_mapping(
+            "mapping-1",
+            {"lease_seconds": 600},
+            reviewer_id="user-reviewer-1",
+            organization_id="org-1",
+        )
+        mine = service.list_review_queue(
+            "cycle-1",
+            claim_state="claimed_by_me",
+            organization_id="org-1",
+            viewer_user_id="user-reviewer-1",
+        )
+        others = service.list_review_queue(
+            "cycle-1",
+            claim_state="claimed_by_other",
+            organization_id="org-1",
+            viewer_user_id="user-reviewer-2",
+        )
+
+        self.assertEqual(claimed.claim_status, "claimed_by_me")
+        self.assertEqual(mine.total_count, 1)
+        self.assertEqual(mine.items[0].claim_status, "claimed_by_me")
+        self.assertEqual(others.total_count, 1)
+        self.assertEqual(others.items[0].claim_status, "claimed_by_other")
+
+    def test_claimed_mapping_rejects_other_reviewer_actions_until_release(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.claim_mapping(
+            "mapping-1",
+            {"lease_seconds": 600},
+            reviewer_id="user-reviewer-1",
+            organization_id="org-1",
+        )
+
+        with self.assertRaisesRegex(ValueError, "REVIEW_CLAIM_CONFLICT"):
+            service.review_mapping(
+                "mapping-1",
+                mapping_review_command(),
+                reviewer_id="user-reviewer-2",
+                organization_id="org-1",
+            )
+
+        released = service.release_mapping_claim(
+            "mapping-1",
+            {},
+            reviewer_id="user-reviewer-1",
+            organization_id="org-1",
+        )
+        reviewed = service.review_mapping(
+            "mapping-1",
+            mapping_review_command(),
+            reviewer_id="user-reviewer-2",
+            organization_id="org-1",
+        )
+
+        self.assertEqual(released.claim_status, "unclaimed")
+        self.assertEqual(reviewed.mapping_status, "accepted")
+
     def test_list_review_queue_rejects_unknown_sort(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
 
         with self.assertRaisesRegex(ValueError, "INVALID_REVIEW_QUEUE_SORT"):
             service.list_review_queue("cycle-1", sort="priority")
+
+    def test_list_review_queue_rejects_unknown_claim_state(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with self.assertRaisesRegex(ValueError, "INVALID_REVIEW_QUEUE_CLAIM_STATE"):
+            service.list_review_queue("cycle-1", claim_state="mine")
 
     def test_gap_transitions_enforce_stricter_terminal_policy(self) -> None:
         service = build_app_service()
@@ -436,15 +548,50 @@ class AuditFlowServiceTests(unittest.TestCase):
         service.review_mapping("mapping-1", mapping_review_command())
         cycle_after_review = service.get_cycle_dashboard("cycle-1").cycle
 
-        self.assertEqual(cycle_after_processing.current_snapshot_version, 1)
+        self.assertEqual(cycle_after_processing.current_snapshot_version, 2)
         self.assertIsNotNone(cycle_after_processing.last_mapped_at)
         self.assertIsNotNone(cycle_after_review.last_reviewed_at)
+        self.assertEqual(cycle_after_review.current_snapshot_version, 3)
 
         resolved = service.decide_gap("gap-1", gap_decision_command(decision="resolve_gap"))
         reopened = service.decide_gap("gap-1", gap_decision_command(decision="reopen_gap"))
+        cycle_after_reopen = service.get_cycle_dashboard("cycle-1").cycle
 
         self.assertEqual(resolved.status, "resolved")
         self.assertEqual(reopened.status, "open")
+        self.assertEqual(cycle_after_reopen.current_snapshot_version, 5)
+
+    def test_review_and_gap_decisions_rebase_live_rows_to_current_snapshot(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command())
+
+        with service.repository.session_factory() as session:
+            cycle_after_review = session.get(AuditCycleRow, "cycle-1")
+            mapping_after_review = session.get(MappingRow, "mapping-1")
+            gap_after_review = session.get(GapRow, "gap-1")
+
+        self.assertIsNotNone(cycle_after_review)
+        self.assertIsNotNone(mapping_after_review)
+        self.assertIsNotNone(gap_after_review)
+        self.assertEqual(cycle_after_review.current_snapshot_version, 2)
+        self.assertEqual(mapping_after_review.snapshot_version, 2)
+        self.assertEqual(gap_after_review.snapshot_version, 2)
+
+        service.decide_gap("gap-1", gap_decision_command())
+
+        with service.repository.session_factory() as session:
+            cycle_after_gap = session.get(AuditCycleRow, "cycle-1")
+            mapping_after_gap = session.get(MappingRow, "mapping-1")
+            gap_after_gap = session.get(GapRow, "gap-1")
+
+        self.assertIsNotNone(cycle_after_gap)
+        self.assertIsNotNone(mapping_after_gap)
+        self.assertIsNotNone(gap_after_gap)
+        self.assertEqual(cycle_after_gap.current_snapshot_version, 3)
+        self.assertEqual(mapping_after_gap.snapshot_version, 3)
+        self.assertEqual(gap_after_gap.snapshot_version, 3)
 
     def test_review_mapping_is_idempotent_for_repeated_key(self) -> None:
         service = build_app_service()
@@ -463,6 +610,27 @@ class AuditFlowServiceTests(unittest.TestCase):
 
         self.assertEqual(first.mapping_status, second.mapping_status)
         self.assertEqual(first.mapping_id, second.mapping_id)
+
+    def test_review_decisions_record_authenticated_reviewer_id(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping(
+            "mapping-1",
+            mapping_review_command(),
+            reviewer_id="user-reviewer-1",
+            organization_id="org-1",
+        )
+
+        with service.repository.session_factory() as session:
+            decision_row = session.scalars(
+                select(ReviewDecisionRow)
+                .where(ReviewDecisionRow.mapping_id == "mapping-1")
+                .order_by(ReviewDecisionRow.created_at.desc())
+            ).first()
+
+        self.assertIsNotNone(decision_row)
+        self.assertEqual(decision_row.reviewer_id, "user-reviewer-1")
 
     def test_review_mapping_rejects_stale_snapshot_after_cycle_advances(self) -> None:
         service = build_app_service()
@@ -509,6 +677,32 @@ class AuditFlowServiceTests(unittest.TestCase):
                 gap_decision_command(decision="acknowledge"),
                 idempotency_key="gap-decision-conflict",
             )
+
+    def test_snapshot_ledger_preserves_historical_refs_after_snapshot_advances(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        initial_snapshot = service.repository.read_snapshot_refs(
+            "cycle-1",
+            working_snapshot_version=1,
+        )
+        service.review_mapping("mapping-1", mapping_review_command())
+        after_review_snapshot = service.repository.read_snapshot_refs(
+            "cycle-1",
+            working_snapshot_version=2,
+        )
+        service.decide_gap("gap-1", gap_decision_command())
+        after_gap_snapshot = service.repository.read_snapshot_refs(
+            "cycle-1",
+            working_snapshot_version=3,
+        )
+
+        self.assertEqual(initial_snapshot["accepted_mapping_ids"], [])
+        self.assertEqual(initial_snapshot["open_gap_ids"], ["gap-1"])
+        self.assertEqual(after_review_snapshot["accepted_mapping_ids"], ["mapping-1"])
+        self.assertEqual(after_review_snapshot["open_gap_ids"], ["gap-1"])
+        self.assertEqual(after_gap_snapshot["accepted_mapping_ids"], ["mapping-1"])
+        self.assertEqual(after_gap_snapshot["open_gap_ids"], [])
 
     def test_duplicate_upload_imports_collapse_before_dispatch(self) -> None:
         service = build_app_service()
@@ -1013,6 +1207,179 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(results.items[0].title, "Searchable Access Review XLSX")
         self.assertIn("break-glass", results.items[0].text_excerpt)
 
+    def test_hybrid_evidence_search_matches_semantic_control_language(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                artifact_id="artifact-semantic-search-1",
+                display_name="Quarterly Entitlement Certification",
+                artifact_text=(
+                    "Quarterly entitlement recertification completed for production privileges.\n"
+                    "Manager signoff recorded after reviewer certification."
+                ),
+            )
+            | {"source_locator": "uploads/entitlement-certification.txt"},
+        )
+        service.dispatch_import_jobs()
+        results = service.search_evidence("cycle-1", query="access review approval", limit=5)
+
+        with service.repository.session_factory() as session:
+            semantic_rows = session.scalars(
+                select(EmbeddingChunkRow)
+                .where(EmbeddingChunkRow.workspace_id == "audit-ws-1")
+                .where(EmbeddingChunkRow.subject_type == "audit_evidence")
+                .where(EmbeddingChunkRow.model_name == service.repository.semantic_model_name)
+            ).all()
+            semantic_vector_rows = session.scalars(
+                select(SemanticVectorRow)
+                .where(SemanticVectorRow.workspace_id == "audit-ws-1")
+                .where(SemanticVectorRow.subject_type == "audit_evidence")
+                .where(SemanticVectorRow.model_name == service.repository.semantic_model_name)
+            ).all()
+
+        self.assertGreaterEqual(len(semantic_rows), 2)
+        self.assertGreaterEqual(len(semantic_vector_rows), 2)
+        self.assertTrue(
+            all(
+                isinstance((row.metadata_payload or {}).get("embedding_vector"), list)
+                and len((row.metadata_payload or {}).get("embedding_vector"))
+                == service.repository.semantic_vector_dimension
+                and isinstance((row.metadata_payload or {}).get("ann_bucket_keys"), list)
+                and len((row.metadata_payload or {}).get("ann_bucket_keys")) >= 2
+                and (row.metadata_payload or {}).get("vector_search_backend") in {"ann-metadata-json", "flat-metadata-json"}
+                for row in semantic_rows
+            )
+        )
+        self.assertTrue(
+            all(
+                isinstance(row.embedding_vector, list)
+                and len(row.embedding_vector) == service.repository.semantic_vector_dimension
+                and isinstance(row.ann_bucket_keys, list)
+                and len(row.ann_bucket_keys) >= 2
+                and isinstance(row.semantic_terms, list)
+                for row in semantic_vector_rows
+            )
+        )
+        self.assertGreaterEqual(results.total_count, 1)
+        self.assertTrue(
+            any(item.title == "Quarterly Entitlement Certification" for item in results.items)
+        )
+        matching_item = next(
+            item for item in results.items
+            if item.title == "Quarterly Entitlement Certification"
+        )
+        self.assertIn("signoff", matching_item.text_excerpt.lower())
+
+    def test_semantic_search_uses_candidate_pruning_in_ann_mode(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        for index in range(6):
+            service.create_upload_import(
+                "cycle-1",
+                upload_import_command(
+                    artifact_id=f"artifact-semantic-prune-{index}",
+                    display_name=f"Entitlement Certification {index}",
+                    artifact_text=(
+                        f"Quarterly entitlement certification {index}\n\n"
+                        "Privileged entitlement attestation completed with documented signoff."
+                    ),
+                ),
+                organization_id="org-1",
+            )
+        service.dispatch_import_jobs()
+
+        repository = service.repository
+        repository.vector_search_mode = "ann"
+        repository.semantic_candidate_limit = 2
+
+        semantic_call_count = 0
+        original_score_semantic_match = repository._score_semantic_match
+
+        def counting_score_semantic_match(*, query, text_content, metadata_payload, query_vector=None):
+            nonlocal semantic_call_count
+            semantic_call_count += 1
+            return original_score_semantic_match(
+                query=query,
+                text_content=text_content,
+                metadata_payload=metadata_payload,
+                query_vector=query_vector,
+            )
+
+        repository._score_semantic_match = counting_score_semantic_match
+
+        results = service.search_evidence("cycle-1", query="access review", limit=5)
+
+        self.assertGreaterEqual(results.total_count, 1)
+        self.assertLessEqual(semantic_call_count, 2)
+
+    def test_import_processing_populates_workflow_grounding_context(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        service.review_mapping("mapping-1", mapping_review_command(comment="Accepted reviewer pattern."))
+        service.decide_gap("gap-1", gap_decision_command(comment="Resolved after refreshed evidence."))
+
+        workflow_run_id = "auditflow-grounding-import-1"
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                workflow_run_id=workflow_run_id,
+                artifact_id="artifact-grounding-1",
+                display_name="Grounded Access Review Upload",
+                artifact_text=(
+                    "Quarterly access review completed for production systems.\n"
+                    "Reviewer confirmed all privileged assignments."
+                ),
+            )
+            | {"source_locator": "uploads/grounded-access-review.txt"},
+        )
+        service.dispatch_import_jobs()
+        state = service.get_workflow_state(workflow_run_id)
+
+        self.assertEqual(state.workflow_run_id, workflow_run_id)
+        self.assertEqual(state.raw_state["framework_name"], "SOC2")
+        self.assertEqual(state.raw_state["freshness_policy"]["max_age_days"], 90)
+        self.assertEqual(state.raw_state["in_scope_controls"][0]["control_code"], "CC6.1")
+        self.assertTrue(
+            any(ref["kind"] == "historical_evidence_chunk" for ref in state.raw_state["evidence_chunk_refs"])
+        )
+        self.assertTrue(
+            any(memory["decision"] == "accept" for memory in state.raw_state["mapping_memory_context"])
+        )
+        self.assertTrue(
+            any(memory["decision"] == "resolve_gap" for memory in state.raw_state["challenge_memory_context"])
+        )
+
+    def test_import_processing_preserves_initiating_auth_context_in_workflow_state(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        workflow_run_id = "auditflow-import-auth-context-1"
+        service.create_upload_import(
+            "cycle-1",
+            upload_import_command(
+                workflow_run_id=workflow_run_id,
+                artifact_id="artifact-auth-context-1",
+                display_name="Auth Context Upload",
+                artifact_text="Quarterly access review completed for production systems.",
+            ),
+            auth_context=SimpleNamespace(
+                user_id="user-reviewer-1",
+                role="reviewer",
+                session_id="auth-session-1",
+            ),
+        )
+        service.dispatch_import_jobs()
+        state = service.get_workflow_state(workflow_run_id)
+
+        self.assertEqual(state.raw_state["user_id"], "user-reviewer-1")
+        self.assertEqual(state.raw_state["role"], "reviewer")
+        self.assertEqual(state.raw_state["session_id"], "auth-session-1")
+
     def test_mapping_and_gap_reviews_record_memory_context(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
@@ -1064,6 +1431,365 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(decision_rows[1].decision, "resolve_gap")
         self.assertEqual(decision_rows[1].from_status, "acknowledged")
         self.assertEqual(decision_rows[1].to_status, "resolved")
+
+    def test_list_tool_access_audit_filters_by_workflow_user_and_tool(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        tool_executor = service.workflow_api_service.execution_service.tool_executor
+        call = SimpleNamespace(
+            tool_call_id="tool-audit-service-1",
+            tool_name="evidence.search",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-tool-audit-service-1",
+            node_name="mapping",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "workspace_id": "audit-ws-1",
+                "audit_cycle_id": "cycle-1",
+                "query": "access review",
+                "limit": 5,
+            },
+            idempotency_key="wf-tool-audit-service-1:evidence.search",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-1",
+                role="reviewer",
+                session_id="auth-session-1",
+            ),
+        )
+
+        tool_executor.execute(call)
+        all_rows = service.list_tool_access_audit(organization_id="org-1")
+        filtered_rows = service.list_tool_access_audit(
+            workflow_run_id="wf-tool-audit-service-1",
+            user_id="user-reviewer-1",
+            tool_name="evidence.search",
+            organization_id="org-1",
+        )
+
+        self.assertGreaterEqual(all_rows.total_count, 1)
+        self.assertEqual(filtered_rows.total_count, 1)
+        self.assertEqual(filtered_rows.items[0].workflow_run_id, "wf-tool-audit-service-1")
+        self.assertEqual(filtered_rows.items[0].node_name, "mapping")
+        self.assertEqual(filtered_rows.items[0].tool_name, "evidence.search")
+        self.assertEqual(filtered_rows.items[0].user_id, "user-reviewer-1")
+        self.assertEqual(filtered_rows.items[0].role, "reviewer")
+        self.assertEqual(filtered_rows.items[0].session_id, "auth-session-1")
+        self.assertEqual(filtered_rows.items[0].arguments["query"], "access review")
+
+    def test_cycle_dashboard_and_cycle_tool_access_endpoint_share_cycle_scoped_audit_view(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        tool_executor = service.workflow_api_service.execution_service.tool_executor
+        first_call = SimpleNamespace(
+            tool_call_id="tool-audit-cycle-1",
+            tool_name="evidence.search",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-cycle-audit-1",
+            node_name="mapping",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "workspace_id": "audit-ws-1",
+                "audit_cycle_id": "cycle-1",
+                "query": "access review",
+                "limit": 5,
+            },
+            idempotency_key="wf-cycle-audit-1:evidence.search",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-1",
+                role="reviewer",
+                session_id="auth-session-1",
+            ),
+        )
+        second_call = SimpleNamespace(
+            tool_call_id="tool-audit-cycle-2",
+            tool_name="mapping.read_candidates",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-cycle-audit-2",
+            node_name="challenge",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "audit_cycle_id": "cycle-1",
+                "evidence_item_id": "evidence-1",
+                "control_id": "control-state-1",
+            },
+            idempotency_key="wf-cycle-audit-2:mapping.read_candidates",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-2",
+                role="reviewer",
+                session_id="auth-session-2",
+            ),
+        )
+
+        tool_executor.execute(first_call)
+        tool_executor.execute(second_call)
+
+        dashboard = service.get_cycle_dashboard("cycle-1", organization_id="org-1")
+        filtered_rows = service.list_cycle_tool_access_audit(
+            "cycle-1",
+            workflow_run_id="wf-cycle-audit-2",
+            tool_name="mapping.read_candidates",
+            organization_id="org-1",
+        )
+
+        self.assertEqual(dashboard.tool_access_summary.total_count, 2)
+        self.assertEqual(dashboard.tool_access_summary.latest_workflow_run_id, "wf-cycle-audit-2")
+        self.assertEqual(
+            dashboard.tool_access_summary.recent_tool_names,
+            ["mapping.read_candidates", "evidence.search"],
+        )
+        self.assertEqual(dashboard.tool_access_summary.execution_status_counts, {"success": 2})
+        self.assertEqual(filtered_rows.total_count, 1)
+        self.assertEqual(filtered_rows.items[0].workflow_run_id, "wf-cycle-audit-2")
+        self.assertEqual(filtered_rows.items[0].tool_name, "mapping.read_candidates")
+        self.assertEqual(filtered_rows.items[0].user_id, "user-reviewer-2")
+
+    def test_control_detail_and_control_tool_access_endpoint_share_control_scoped_audit_view(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        tool_executor = service.workflow_api_service.execution_service.tool_executor
+        unrelated_cycle_call = SimpleNamespace(
+            tool_call_id="tool-audit-control-1",
+            tool_name="evidence.search",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-control-audit-1",
+            node_name="mapping",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "workspace_id": "audit-ws-1",
+                "audit_cycle_id": "cycle-1",
+                "query": "access review",
+                "limit": 3,
+            },
+            idempotency_key="wf-control-audit-1:evidence.search",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-1",
+                role="reviewer",
+                session_id="auth-session-1",
+            ),
+        )
+        direct_control_call = SimpleNamespace(
+            tool_call_id="tool-audit-control-2",
+            tool_name="mapping.read_candidates",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-control-audit-2",
+            node_name="challenge",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "audit_cycle_id": "cycle-1",
+                "evidence_item_id": "evidence-1",
+                "control_id": "control-state-1",
+            },
+            idempotency_key="wf-control-audit-2:mapping.read_candidates",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-2",
+                role="reviewer",
+                session_id="auth-session-2",
+            ),
+        )
+        mapping_context_call = SimpleNamespace(
+            tool_call_id="tool-audit-control-3",
+            tool_name="review_decision.read_history",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-control-audit-3",
+            node_name="challenge",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "audit_cycle_id": "cycle-1",
+                "mapping_id": "mapping-1",
+            },
+            idempotency_key="wf-control-audit-3:review_decision.read_history",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-3",
+                role="reviewer",
+                session_id="auth-session-3",
+            ),
+        )
+        other_control_call = SimpleNamespace(
+            tool_call_id="tool-audit-control-4",
+            tool_name="mapping.read_candidates",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-control-audit-4",
+            node_name="challenge",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "audit_cycle_id": "cycle-1",
+                "control_id": "control-state-2",
+            },
+            idempotency_key="wf-control-audit-4:mapping.read_candidates",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-4",
+                role="reviewer",
+                session_id="auth-session-4",
+            ),
+        )
+
+        tool_executor.execute(unrelated_cycle_call)
+        tool_executor.execute(direct_control_call)
+        tool_executor.execute(mapping_context_call)
+        tool_executor.execute(other_control_call)
+
+        control_detail = service.get_control_detail("control-state-1", organization_id="org-1")
+        filtered_rows = service.list_control_tool_access_audit(
+            "control-state-1",
+            tool_name="mapping.read_candidates",
+            organization_id="org-1",
+        )
+
+        self.assertEqual(control_detail.tool_access_summary.total_count, 2)
+        self.assertEqual(control_detail.tool_access_summary.latest_workflow_run_id, "wf-control-audit-3")
+        self.assertEqual(
+            control_detail.tool_access_summary.recent_tool_names,
+            ["review_decision.read_history", "mapping.read_candidates"],
+        )
+        self.assertEqual(control_detail.tool_access_summary.execution_status_counts, {"success": 2})
+        self.assertEqual(filtered_rows.total_count, 1)
+        self.assertEqual(filtered_rows.items[0].workflow_run_id, "wf-control-audit-2")
+        self.assertEqual(filtered_rows.items[0].tool_name, "mapping.read_candidates")
+        self.assertEqual(filtered_rows.items[0].arguments["control_id"], "control-state-1")
+
+    def test_review_queue_and_mapping_tool_access_endpoint_share_mapping_scoped_audit_view(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        tool_executor = service.workflow_api_service.execution_service.tool_executor
+        unrelated_cycle_call = SimpleNamespace(
+            tool_call_id="tool-audit-mapping-1",
+            tool_name="evidence.search",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-mapping-audit-1",
+            node_name="mapping",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "workspace_id": "audit-ws-1",
+                "audit_cycle_id": "cycle-1",
+                "query": "access review",
+                "limit": 3,
+            },
+            idempotency_key="wf-mapping-audit-1:evidence.search",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-1",
+                role="reviewer",
+                session_id="auth-session-1",
+            ),
+        )
+        inferred_mapping_call = SimpleNamespace(
+            tool_call_id="tool-audit-mapping-2",
+            tool_name="mapping.read_candidates",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-mapping-audit-2",
+            node_name="challenge",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "audit_cycle_id": "cycle-1",
+                "evidence_item_id": "evidence-1",
+                "control_id": "control-state-1",
+            },
+            idempotency_key="wf-mapping-audit-2:mapping.read_candidates",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-2",
+                role="reviewer",
+                session_id="auth-session-2",
+            ),
+        )
+        direct_mapping_call = SimpleNamespace(
+            tool_call_id="tool-audit-mapping-3",
+            tool_name="review_decision.read_history",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-mapping-audit-3",
+            node_name="challenge",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "audit_cycle_id": "cycle-1",
+                "mapping_id": "mapping-1",
+            },
+            idempotency_key="wf-mapping-audit-3:review_decision.read_history",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-3",
+                role="reviewer",
+                session_id="auth-session-3",
+            ),
+        )
+        other_mapping_call = SimpleNamespace(
+            tool_call_id="tool-audit-mapping-4",
+            tool_name="mapping.read_candidates",
+            tool_version="2026-03-16.1",
+            workflow_run_id="wf-mapping-audit-4",
+            node_name="challenge",
+            subject_type="audit_cycle",
+            subject_id="cycle-1",
+            arguments={
+                "audit_cycle_id": "cycle-1",
+                "evidence_item_id": "evidence-1",
+                "control_id": "control-state-2",
+            },
+            idempotency_key="wf-mapping-audit-4:mapping.read_candidates",
+            authorization_context=SimpleNamespace(
+                organization_id="org-1",
+                workspace_id="audit-ws-1",
+                user_id="user-reviewer-4",
+                role="reviewer",
+                session_id="auth-session-4",
+            ),
+        )
+
+        tool_executor.execute(unrelated_cycle_call)
+        tool_executor.execute(inferred_mapping_call)
+        tool_executor.execute(direct_mapping_call)
+        tool_executor.execute(other_mapping_call)
+
+        review_queue = service.list_review_queue("cycle-1", organization_id="org-1")
+        filtered_rows = service.list_mapping_tool_access_audit(
+            "mapping-1",
+            tool_name="mapping.read_candidates",
+            organization_id="org-1",
+        )
+
+        self.assertEqual(review_queue.total_count, 1)
+        self.assertEqual(review_queue.items[0].mapping_id, "mapping-1")
+        self.assertEqual(review_queue.items[0].tool_access_summary.total_count, 2)
+        self.assertEqual(review_queue.items[0].tool_access_summary.latest_workflow_run_id, "wf-mapping-audit-3")
+        self.assertEqual(
+            review_queue.items[0].tool_access_summary.recent_tool_names,
+            ["review_decision.read_history", "mapping.read_candidates"],
+        )
+        self.assertEqual(review_queue.items[0].tool_access_summary.execution_status_counts, {"success": 2})
+        self.assertEqual(filtered_rows.total_count, 1)
+        self.assertEqual(filtered_rows.items[0].workflow_run_id, "wf-mapping-audit-2")
+        self.assertEqual(filtered_rows.items[0].tool_name, "mapping.read_candidates")
+        self.assertEqual(filtered_rows.items[0].arguments["control_id"], "control-state-1")
 
     def test_mapping_review_emits_review_recorded_outbox_event(self) -> None:
         service = build_app_service()
@@ -1128,6 +1854,61 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(state.current_state, "human_review")
         self.assertEqual(state.workflow_type, "auditflow_cycle")
 
+    def test_process_cycle_persists_workflow_generated_mapping(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        cycle = service.create_cycle(
+            cycle_create_command(workspace_id="audit-ws-1", cycle_name="SOC2 2033")
+        )
+        control = service.list_controls(cycle.cycle_id)[0]
+        service.repository.upsert_artifact_blob(
+            artifact_id="artifact-generated-1",
+            artifact_type="upload_raw",
+            content_text="Quarterly access review evidence for generated workflow mapping.",
+            metadata_payload={
+                "organization_id": "org-1",
+                "workspace_id": "audit-ws-1",
+            },
+        )
+
+        result = service.process_cycle(
+            {
+                "workflow_run_id": "auditflow-generated-cycle-1",
+                "audit_cycle_id": cycle.cycle_id,
+                "audit_workspace_id": "audit-ws-1",
+                "organization_id": "org-1",
+                "workspace_id": "audit-ws-1",
+                "source_id": "source-generated-1",
+                "source_type": "upload",
+                "artifact_id": "artifact-generated-1",
+                "extracted_text_or_summary": "Quarterly access review completed for production systems.",
+                "allowed_evidence_types": ["ticket"],
+                "evidence_item_id": "evidence-generated-1",
+                "evidence_chunk_refs": [{"kind": "evidence_chunk", "id": "chunk-generated-1"}],
+                "in_scope_controls": [
+                    {
+                        "control_state_id": control.control_state_id,
+                        "control_code": control.control_code,
+                        "title": "Access permissions are scoped and reviewed.",
+                    }
+                ],
+                "framework_name": "SOC2",
+                "mapping_payloads": [],
+                "mapping_memory_context": [],
+                "challenge_memory_context": [],
+                "freshness_policy": {"mode": "standard", "max_age_days": 90},
+                "control_text": "Review user access quarterly.",
+            }
+        )
+        mappings = service.list_mappings(cycle.cycle_id)
+
+        self.assertEqual(result.current_state, "human_review")
+        self.assertEqual(mappings.total_count, 1)
+        self.assertEqual(mappings.items[0].control_state_id, control.control_state_id)
+        self.assertEqual(mappings.items[0].evidence_item_id, "evidence-generated-1")
+        self.assertIn("aligns best", mappings.items[0].rationale_summary.lower())
+
     def test_process_cycle_emits_mapping_progress_event(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
@@ -1148,8 +1929,19 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.addCleanup(service.close)
 
         review_result = service.review_mapping("mapping-1", mapping_review_command())
+        service.decide_gap("gap-1", gap_decision_command())
         review_queue = service.list_review_queue("cycle-1")
-        result = service.generate_export(export_generation_command(workflow_run_id="auditflow-service-export-1"))
+        result = service.generate_export(
+            export_generation_command(
+                workflow_run_id="auditflow-service-export-1",
+                working_snapshot_version=3,
+            ),
+            auth_context=SimpleNamespace(
+                user_id="user-admin-1",
+                role="product_admin",
+                session_id="auth-session-export-1",
+            ),
+        )
         dashboard = service.get_cycle_dashboard("cycle-1")
         export_package = service.get_export_package(dashboard.latest_export_package.package_id)
         narratives = service.list_narratives("cycle-1")
@@ -1157,22 +1949,79 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(review_result.mapping_status, "accepted")
         self.assertEqual(review_queue.total_count, 0)
         self.assertEqual(result.current_state, "exported")
+        self.assertEqual(dashboard.cycle.current_snapshot_version, 3)
         self.assertEqual(export_package.status, "ready")
         self.assertEqual(export_package.package_artifact_id, export_package.artifact_id)
         self.assertIsNotNone(export_package.manifest_artifact_id)
         self.assertIsNotNone(export_package.immutable_at)
         self.assertGreaterEqual(len(narratives), 1)
+        self.assertTrue(
+            any("Snapshot 3 for cycle `cycle-1` packages accepted mappings" in item.content_markdown for item in narratives)
+        )
 
         with service.repository.session_factory() as session:
             package_row = session.get(ArtifactBlobRow, export_package.package_artifact_id)
             manifest_row = session.get(ArtifactBlobRow, export_package.manifest_artifact_id)
+            snapshot_row = session.scalars(
+                select(CycleSnapshotRow)
+                .where(CycleSnapshotRow.cycle_id == "cycle-1")
+                .where(CycleSnapshotRow.snapshot_version == 3)
+            ).first()
 
         self.assertIsNotNone(package_row)
         self.assertIsNotNone(manifest_row)
+        self.assertIsNotNone(snapshot_row)
         self.assertIn("manifest_artifact_id", package_row.content_text)
+        self.assertIn("tool_access_audit_count", package_row.content_text)
         self.assertIn("narrative_markdown", package_row.content_text)
         self.assertIn("accepted_mappings", manifest_row.content_text)
         self.assertIn("narratives", manifest_row.content_text)
+        self.assertIn("tool_access_audit_summary", manifest_row.content_text)
+        self.assertIn("tool_access_audit", manifest_row.content_text)
+        self.assertIn('"tool_name": "export.snapshot_validate"', manifest_row.content_text)
+        self.assertIn('"tool_name": "narrative.snapshot_read"', manifest_row.content_text)
+        self.assertIn('"user_id": "user-admin-1"', manifest_row.content_text)
+        self.assertEqual(snapshot_row.snapshot_status, "frozen")
+        self.assertEqual(snapshot_row.package_id, export_package.package_id)
+        self.assertIsNotNone(snapshot_row.frozen_at)
+
+    def test_import_processing_uses_stable_evidence_id_and_workflow_mapping(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        upload = service.create_upload_import(
+            "cycle-1",
+            upload_import_command(workflow_run_id="auditflow-import-stable-1"),
+        )
+        source_id = upload.evidence_source_ids[0]
+
+        service.dispatch_import_jobs()
+
+        with service.repository.session_factory() as session:
+            evidence_rows = session.scalars(
+                select(EvidenceRow).where(EvidenceRow.audit_cycle_id == "cycle-1")
+            ).all()
+            evidence_row = next(
+                row
+                for row in evidence_rows
+                if isinstance(row.source_payload, dict)
+                and row.source_payload.get("evidence_source_id") == source_id
+            )
+            mapping_rows = session.scalars(
+                select(MappingRow)
+                .where(MappingRow.cycle_id == "cycle-1")
+                .where(MappingRow.evidence_item_id == evidence_row.evidence_id)
+            ).all()
+
+        expected_evidence_id = service._stable_import_evidence_id(
+            cycle_id="cycle-1",
+            evidence_source_id=source_id,
+        )
+        self.assertEqual(evidence_row.evidence_id, expected_evidence_id)
+        self.assertGreaterEqual(len(mapping_rows), 1)
+        self.assertTrue(
+            all("requires reviewer confirmation" not in row.rationale_summary for row in mapping_rows)
+        )
 
     def test_create_export_package_returns_latest_package(self) -> None:
         service = build_app_service()
@@ -1267,8 +2116,13 @@ class AuditFlowServiceTests(unittest.TestCase):
         service_one = build_app_service(database_url=database_url)
         service_two = None
         try:
+            service_one.review_mapping("mapping-1", mapping_review_command())
+            service_one.decide_gap("gap-1", gap_decision_command())
             result = service_one.generate_export(
-                export_generation_command(workflow_run_id="auditflow-persist-export-1")
+                export_generation_command(
+                    workflow_run_id="auditflow-persist-export-1",
+                    working_snapshot_version=3,
+                )
             )
             service_one.close()
 

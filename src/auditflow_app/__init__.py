@@ -34,6 +34,9 @@ from .api_models import (
     ReviewDecisionSummary,
     ReviewQueueItem,
     ReviewQueueResponse,
+    ToolAccessAuditListResponse,
+    ToolAccessAuditSummary,
+    ToolAccessSummary,
     UploadImportCommand,
 )
 from .bootstrap import (
@@ -131,6 +134,9 @@ __all__ = [
     "ReviewDecisionSummary",
     "ReviewQueueItem",
     "ReviewQueueResponse",
+    "ToolAccessAuditListResponse",
+    "ToolAccessAuditSummary",
+    "ToolAccessSummary",
     "UploadImportCommand",
     "SqlAlchemyAuditFlowRepository",
     "build_api_service",

@@ -11,6 +11,7 @@ if str(SRC) not in sys.path:
 
 from auditflow_app.bootstrap import (
     build_api_service,
+    build_runtime_components,
     build_fastapi_app,
     build_import_worker,
     build_import_worker_supervisor,
@@ -18,7 +19,7 @@ from auditflow_app.bootstrap import (
     list_supported_workflows,
 )
 from auditflow_app.replay_harness import AuditFlowReplayHarness
-from auditflow_app.sample_payloads import export_generation_request, upload_import_command
+from auditflow_app.sample_payloads import cycle_processing_request, export_generation_request, upload_import_command
 
 
 class AuditFlowBootstrapTests(unittest.TestCase):
@@ -35,6 +36,81 @@ class AuditFlowBootstrapTests(unittest.TestCase):
         result = api_service.start_workflow(export_generation_request(workflow_run_id="auditflow-test-1"))
         self.assertEqual(result.workflow_name, "auditflow_export_generation")
         self.assertEqual(result.current_state, "exported")
+
+    def test_build_runtime_components_uses_product_gateway_with_dynamic_tool_calls(self) -> None:
+        components = build_runtime_components()
+        runtime_stores = components["runtime_stores"]
+        if runtime_stores is not None and hasattr(runtime_stores, "dispose"):
+            self.addCleanup(runtime_stores.dispose)
+
+        registry = components["workflow_registry"]
+        definition = registry.get("auditflow_cycle_processing")
+        state = definition.initial_state_builder(
+            "auditflow-runtime-test-1",
+            cycle_processing_request(workflow_run_id="auditflow-runtime-test-1")["input_payload"],
+            {},
+        )
+        result = components["execution_service"].run_workflow(
+            workflow_run_id="auditflow-runtime-test-1",
+            workflow_type=definition.workflow_type,
+            initial_state=state,
+            steps=definition.steps[:1],
+            source_builders=definition.source_builders,
+        )
+
+        self.assertNotEqual(components["model_gateway"].__class__.__name__, "StaticModelGateway")
+        self.assertEqual(result.final_state["current_state"], "mapping")
+        self.assertGreaterEqual(len(result.traces[0].tool_traces), 1)
+        self.assertEqual(result.traces[0].tool_traces[0].tool_name, "artifact.read")
+
+    def test_dynamic_tool_calls_include_user_auth_context(self) -> None:
+        components = build_runtime_components()
+        runtime_stores = components["runtime_stores"]
+        if runtime_stores is not None and hasattr(runtime_stores, "dispose"):
+            self.addCleanup(runtime_stores.dispose)
+
+        captured_context = {}
+        tool_executor = components["tool_executor"]
+        original_adapter = tool_executor._adapters["artifact_store"]
+
+        class _CapturingAdapter:
+            def execute(self, *, tool, call, arguments):
+                captured_context["organization_id"] = call.authorization_context.organization_id
+                captured_context["workspace_id"] = call.authorization_context.workspace_id
+                captured_context["user_id"] = call.authorization_context.user_id
+                captured_context["role"] = call.authorization_context.role
+                captured_context["session_id"] = call.authorization_context.session_id
+                return original_adapter.execute(tool=tool, call=call, arguments=arguments)
+
+        tool_executor.register_adapter("artifact_store", _CapturingAdapter())
+        registry = components["workflow_registry"]
+        definition = registry.get("auditflow_cycle_processing")
+        state = definition.initial_state_builder(
+            "auditflow-runtime-auth-test-1",
+            cycle_processing_request(workflow_run_id="auditflow-runtime-auth-test-1")["input_payload"],
+            {
+                "user_id": "user-admin-1",
+                "role": "product_admin",
+                "session_id": "auth-session-1",
+            },
+        )
+        result = components["execution_service"].run_workflow(
+            workflow_run_id="auditflow-runtime-auth-test-1",
+            workflow_type=definition.workflow_type,
+            initial_state=state,
+            steps=definition.steps[:1],
+            source_builders=definition.source_builders,
+        )
+
+        self.assertEqual(result.final_state["current_state"], "mapping")
+        self.assertEqual(result.traces[0].tool_traces[0].user_id, "user-admin-1")
+        self.assertEqual(result.traces[0].tool_traces[0].role, "product_admin")
+        self.assertEqual(result.traces[0].tool_traces[0].session_id, "auth-session-1")
+        self.assertEqual(captured_context["organization_id"], "org-1")
+        self.assertEqual(captured_context["workspace_id"], "audit-ws-1")
+        self.assertEqual(captured_context["user_id"], "user-admin-1")
+        self.assertEqual(captured_context["role"], "product_admin")
+        self.assertEqual(captured_context["session_id"], "auth-session-1")
 
     def test_build_fastapi_app_or_raise_expected_error(self) -> None:
         try:

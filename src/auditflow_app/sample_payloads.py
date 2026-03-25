@@ -2,6 +2,8 @@ def cycle_processing_payload() -> dict:
     return {
         "audit_cycle_id": "cycle-1",
         "audit_workspace_id": "audit-ws-1",
+        "organization_id": "org-1",
+        "workspace_id": "audit-ws-1",
         "source_id": "source-1",
         "source_type": "upload",
         "artifact_id": "artifact-1",
@@ -12,15 +14,20 @@ def cycle_processing_payload() -> dict:
         "in_scope_controls": ["control-1"],
         "framework_name": "SOC2",
         "mapping_payloads": [{"mapping_id": "mapping-1"}],
+        "mapping_memory_context": [],
+        "challenge_memory_context": [],
+        "freshness_policy": {"mode": "standard"},
         "control_text": "Review user access quarterly.",
     }
 
 
-def export_generation_payload() -> dict:
+def export_generation_payload(*, working_snapshot_version: int = 3) -> dict:
     return {
         "audit_cycle_id": "cycle-1",
         "audit_workspace_id": "audit-ws-1",
-        "working_snapshot_version": 3,
+        "organization_id": "org-1",
+        "workspace_id": "audit-ws-1",
+        "working_snapshot_version": working_snapshot_version,
         "accepted_mapping_refs": ["mapping-1"],
         "open_gap_refs": [],
         "export_scope": "cycle_package",
@@ -43,12 +50,13 @@ def cycle_processing_request(
 def export_generation_request(
     *,
     workflow_run_id: str = "auditflow-demo-export",
+    working_snapshot_version: int = 3,
     state_overrides: dict | None = None,
 ) -> dict:
     return {
         "workflow_name": "auditflow_export_generation",
         "workflow_run_id": workflow_run_id,
-        "input_payload": export_generation_payload(),
+        "input_payload": export_generation_payload(working_snapshot_version=working_snapshot_version),
         "state_overrides": state_overrides or {},
     }
 
@@ -67,9 +75,10 @@ def cycle_processing_command(
 def export_generation_command(
     *,
     workflow_run_id: str = "auditflow-demo-export",
+    working_snapshot_version: int = 3,
     state_overrides: dict | None = None,
 ) -> dict:
-    payload = export_generation_payload()
+    payload = export_generation_payload(working_snapshot_version=working_snapshot_version)
     payload["workflow_run_id"] = workflow_run_id
     payload["state_overrides"] = state_overrides or {}
     return payload
@@ -129,6 +138,8 @@ def upload_import_command(
         "source_locator": "uploads/q1-access-review.csv",
         "artifact_text": artifact_text,
         "artifact_bytes_base64": artifact_bytes_base64,
+        "organization_id": "org-1",
+        "workspace_id": "audit-ws-1",
     }
 
 
@@ -144,6 +155,8 @@ def external_import_command(
         "provider": provider,
         "upstream_ids": upstream_ids or ["SEC-125", "SEC-126"],
         "query": None,
+        "organization_id": "org-1",
+        "workspace_id": "audit-ws-1",
     }
 
 
@@ -157,6 +170,8 @@ def export_create_command(
         "workflow_run_id": workflow_run_id,
         "snapshot_version": snapshot_version,
         "format": format,
+        "organization_id": "org-1",
+        "workspace_id": "audit-ws-1",
     }
 
 

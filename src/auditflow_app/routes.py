@@ -8,7 +8,13 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from .auth import AuditFlowAuthorizationError, AuditFlowAuthorizer, HeaderAuditFlowAuthorizer
+from .auth import (
+    AuditFlowAuthorizationError,
+    AuditFlowAuthorizer,
+    CurrentUserResponse,
+    HeaderAuditFlowAuthorizer,
+    SessionCreateCommand,
+)
 
 ERROR_STATUS_BY_CODE = {
     "WORKSPACE_SLUG_ALREADY_EXISTS": 409,
@@ -16,11 +22,13 @@ ERROR_STATUS_BY_CODE = {
     "IDEMPOTENCY_CONFLICT": 409,
     "CONFLICT_STALE_RESOURCE": 409,
     "MAPPING_ALREADY_TERMINAL": 409,
+    "REVIEW_CLAIM_CONFLICT": 409,
     "GAP_STATUS_CONFLICT": 409,
     "EXPORT_ALREADY_RUNNING": 409,
     "SNAPSHOT_STALE": 409,
     "CYCLE_NOT_READY_FOR_EXPORT": 422,
     "INVALID_REVIEW_QUEUE_SORT": 400,
+    "INVALID_REVIEW_QUEUE_CLAIM_STATE": 400,
     "INVALID_CURSOR": 400,
     "INVALID_ARTIFACT_BYTES": 400,
     "INVALID_SEARCH_QUERY": 400,
@@ -44,6 +52,9 @@ from .api_models import (
     ImportAcceptedResponse,
     ImportDispatchResponse,
     ImportListResponse,
+    MappingClaimCommand,
+    MappingClaimReleaseCommand,
+    MappingClaimResponse,
     MappingListResponse,
     ExportCreateCommand,
     ExportGenerationCommand,
@@ -53,8 +64,10 @@ from .api_models import (
     MappingReviewCommand,
     MappingReviewResponse,
     NarrativeSummary,
+    RuntimeCapabilitiesResponse,
     ReviewDecisionListResponse,
     ReviewQueueResponse,
+    ToolAccessAuditListResponse,
     UploadImportCommand,
     EvidenceSearchResponse,
 )
@@ -263,7 +276,7 @@ def _resolve_outbox_event_context(service: AuditFlowAppService, event) -> dict[s
 def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAuthorizer | None = None):
     ap = load_shared_agent_platform()
     try:
-        from fastapi import Depends, FastAPI, Header, Request
+        from fastapi import Cookie, Depends, FastAPI, Header, Request, Response
         from fastapi.responses import JSONResponse, StreamingResponse
     except ImportError as exc:
         errors_module = importlib.import_module(f"{ap.__name__}.errors")
@@ -272,7 +285,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         raise FastAPIUnavailableError("fastapi is not installed") from exc
 
     app = FastAPI(title="AuditFlow API")
-    route_authorizer = authorizer or HeaderAuditFlowAuthorizer()
+    auth_service = getattr(service, "auth_service", None)
+    route_authorizer = (
+        authorizer
+        or (auth_service.build_authorizer() if auth_service is not None else HeaderAuditFlowAuthorizer())
+    )
 
     @app.exception_handler(KeyError)
     def handle_key_error(request: Request, exc: KeyError):
@@ -313,12 +330,99 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
     require_reviewer_access = _build_access_dependency("reviewer")
     require_product_admin_access = _build_access_dependency("product_admin")
 
+    if auth_service is not None:
+        @app.post("/api/v1/auth/session")
+        def create_auth_session(
+            command: SessionCreateCommand,
+            request: Request,
+            request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        ):
+            issue = auth_service.create_session(
+                command,
+                ip_address=(request.client.host if request.client is not None else None),
+                user_agent=request.headers.get("User-Agent"),
+            )
+            response = JSONResponse(
+                status_code=200,
+                content=success_envelope(
+                    issue.response,
+                    request_id=request_id,
+                ),
+            )
+            response.set_cookie(
+                key="refresh_token",
+                value=issue.refresh_token,
+                httponly=True,
+                samesite="lax",
+                secure=False,
+                path="/",
+            )
+            return response
+
+        @app.post("/api/v1/auth/session/refresh")
+        def refresh_auth_session(
+            request: Request,
+            refresh_token: str | None = Cookie(default=None, alias="refresh_token"),
+            request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        ):
+            issue = auth_service.refresh_session(
+                refresh_token,
+                ip_address=(request.client.host if request.client is not None else None),
+                user_agent=request.headers.get("User-Agent"),
+            )
+            response = JSONResponse(
+                status_code=200,
+                content=success_envelope(
+                    issue.response,
+                    request_id=request_id,
+                ),
+            )
+            response.set_cookie(
+                key="refresh_token",
+                value=issue.refresh_token,
+                httponly=True,
+                samesite="lax",
+                secure=False,
+                path="/",
+            )
+            return response
+
+        @app.delete("/api/v1/auth/session/current", status_code=204)
+        def revoke_current_auth_session(
+            auth_context=Depends(require_viewer_access),
+        ):
+            auth_service.revoke_session(auth_context.session_id)
+            response = Response(status_code=204)
+            response.delete_cookie("refresh_token", path="/")
+            return response
+
+        @app.get("/api/v1/me")
+        def get_current_user(
+            request_id: str | None = Header(default=None, alias="X-Request-Id"),
+            auth_context=Depends(require_viewer_access),
+        ) -> dict[str, object]:
+            return success_envelope(
+                auth_service.get_current_user(auth_context),
+                request_id=request_id,
+            )
+
     @app.get("/health")
     def health(
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
     ) -> dict[str, object]:
         return success_envelope(
             HealthResponse(status="ok", product="auditflow"),
+            request_id=request_id,
+        )
+
+    @app.get("/api/v1/auditflow/runtime-capabilities")
+    def get_runtime_capabilities(
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_product_admin_access),
+    ) -> dict[str, object]:
+        del auth_context
+        return success_envelope(
+            service.get_runtime_capabilities(),
             request_id=request_id,
         )
 
@@ -339,9 +443,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.get_workflow_state(workflow_run_id),
+            service.get_workflow_state(
+                workflow_run_id,
+                organization_id=auth_context.organization_id,
+            ),
             request_id=request_id,
         )
 
@@ -354,7 +460,10 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
         auth_context=Depends(require_viewer_access),
     ):
-        del auth_context
+        service.get_workspace(
+            workspace_id,
+            organization_id=auth_context.organization_id,
+        )
         runtime_stores = getattr(service, "runtime_stores", None)
         outbox_store = getattr(runtime_stores, "outbox_store", None)
 
@@ -418,9 +527,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_product_admin_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.create_workspace(command),
+            service.create_workspace(
+                command,
+                organization_id=auth_context.organization_id,
+            ),
             request_id=request_id,
         )
 
@@ -430,9 +541,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.get_workspace(workspace_id),
+            service.get_workspace(
+                workspace_id,
+                organization_id=auth_context.organization_id,
+            ),
             request_id=request_id,
         )
 
@@ -443,9 +556,12 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.create_cycle(command, idempotency_key=idempotency_key),
+            service.create_cycle(
+                command,
+                idempotency_key=idempotency_key,
+                organization_id=auth_context.organization_id,
+            ),
             request_id=request_id,
         )
 
@@ -458,8 +574,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
-        items = service.list_cycles(workspace_id, status=status)
+        items = service.list_cycles(
+            workspace_id,
+            status=status,
+            organization_id=auth_context.organization_id,
+        )
         page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
         return success_envelope(
             page_items,
@@ -474,9 +593,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.get_cycle_dashboard(cycle_id),
+            service.get_cycle_dashboard(
+                cycle_id,
+                organization_id=auth_context.organization_id,
+            ),
             request_id=request_id,
         )
 
@@ -490,8 +611,12 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
-        items = service.list_controls(cycle_id, coverage_status=coverage_status, search=search)
+        items = service.list_controls(
+            cycle_id,
+            coverage_status=coverage_status,
+            search=search,
+            organization_id=auth_context.organization_id,
+        )
         page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
         return success_envelope(
             page_items,
@@ -510,11 +635,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
         response = service.list_mappings(
             cycle_id,
             control_state_id=control_state_id,
             mapping_status=mapping_status,
+            organization_id=auth_context.organization_id,
         )
         page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
         return success_envelope(
@@ -532,10 +657,46 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
         del cycle_id
-        del auth_context
         return success_envelope(
-            service.get_control_detail(control_state_id),
+            service.get_control_detail(
+                control_state_id,
+                organization_id=auth_context.organization_id,
+            ),
             request_id=request_id,
+        )
+
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/controls/{control_state_id}/tool-access-audit")
+    def list_control_tool_access_audit(
+        cycle_id: str,
+        control_state_id: str,
+        workflow_run_id: str | None = None,
+        user_id: str | None = None,
+        tool_name: str | None = None,
+        execution_status: str | None = None,
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_reviewer_access),
+    ) -> dict[str, object]:
+        del cycle_id
+        response = service.list_control_tool_access_audit(
+            control_state_id,
+            workflow_run_id=workflow_run_id,
+            user_id=user_id,
+            tool_name=tool_name,
+            execution_status=execution_status,
+            organization_id=auth_context.organization_id,
+        )
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        paged_response = ToolAccessAuditListResponse(
+            total_count=response.total_count,
+            items=page_items,
+        )
+        return success_envelope(
+            paged_response,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
         )
 
     @app.get("/api/v1/auditflow/evidence/{evidence_id}")
@@ -544,9 +705,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.get_evidence(evidence_id),
+            service.get_evidence(
+                evidence_id,
+                organization_id=auth_context.organization_id,
+            ),
             request_id=request_id,
         )
 
@@ -558,8 +721,12 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
-        response = service.search_evidence(cycle_id, query=query, limit=limit)
+        response = service.search_evidence(
+            cycle_id,
+            query=query,
+            limit=limit,
+            organization_id=auth_context.organization_id,
+        )
         return success_envelope(
             response,
             request_id=request_id,
@@ -578,7 +745,6 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
         response = service.list_memory_records(
             cycle_id,
             scope=scope,
@@ -586,6 +752,7 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
             subject_id=subject_id,
             memory_type=memory_type,
             status=status,
+            organization_id=auth_context.organization_id,
         )
         page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
         paged_response = MemoryRecordListResponse(
@@ -611,8 +778,12 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
-        items = service.list_gaps(cycle_id, status=status, severity=severity)
+        items = service.list_gaps(
+            cycle_id,
+            status=status,
+            severity=severity,
+            organization_id=auth_context.organization_id,
+        )
         page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
         return success_envelope(
             page_items,
@@ -626,18 +797,21 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         cycle_id: str,
         control_state_id: str | None = None,
         severity: str | None = None,
+        claim_state: str | None = None,
         sort: str = "recent",
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
         response = service.list_review_queue(
             cycle_id,
             control_state_id=control_state_id,
             severity=severity,
+            claim_state=claim_state,
             sort=sort,
+            organization_id=auth_context.organization_id,
+            viewer_user_id=auth_context.user_id,
         )
         page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
         return success_envelope(
@@ -657,11 +831,113 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
-        response = service.list_review_decisions(cycle_id, mapping_id=mapping_id, gap_id=gap_id)
+        response = service.list_review_decisions(
+            cycle_id,
+            mapping_id=mapping_id,
+            gap_id=gap_id,
+            organization_id=auth_context.organization_id,
+        )
         page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
         return success_envelope(
             page_items,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
+
+    @app.get("/api/v1/auditflow/cycles/{cycle_id}/tool-access-audit")
+    def list_cycle_tool_access_audit(
+        cycle_id: str,
+        workflow_run_id: str | None = None,
+        user_id: str | None = None,
+        tool_name: str | None = None,
+        execution_status: str | None = None,
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_reviewer_access),
+    ) -> dict[str, object]:
+        response = service.list_cycle_tool_access_audit(
+            cycle_id,
+            workflow_run_id=workflow_run_id,
+            user_id=user_id,
+            tool_name=tool_name,
+            execution_status=execution_status,
+            organization_id=auth_context.organization_id,
+        )
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        paged_response = ToolAccessAuditListResponse(
+            total_count=response.total_count,
+            items=page_items,
+        )
+        return success_envelope(
+            paged_response,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
+
+    @app.get("/api/v1/auditflow/tool-access-audit")
+    def list_tool_access_audit(
+        workflow_run_id: str | None = None,
+        user_id: str | None = None,
+        tool_name: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
+        execution_status: str | None = None,
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_reviewer_access),
+    ) -> dict[str, object]:
+        response = service.list_tool_access_audit(
+            workflow_run_id=workflow_run_id,
+            user_id=user_id,
+            tool_name=tool_name,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            execution_status=execution_status,
+            organization_id=auth_context.organization_id,
+        )
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        paged_response = ToolAccessAuditListResponse(
+            total_count=response.total_count,
+            items=page_items,
+        )
+        return success_envelope(
+            paged_response,
+            request_id=request_id,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
+
+    @app.get("/api/v1/auditflow/mappings/{mapping_id}/tool-access-audit")
+    def list_mapping_tool_access_audit(
+        mapping_id: str,
+        workflow_run_id: str | None = None,
+        user_id: str | None = None,
+        tool_name: str | None = None,
+        execution_status: str | None = None,
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_reviewer_access),
+    ) -> dict[str, object]:
+        response = service.list_mapping_tool_access_audit(
+            mapping_id,
+            workflow_run_id=workflow_run_id,
+            user_id=user_id,
+            tool_name=tool_name,
+            execution_status=execution_status,
+            organization_id=auth_context.organization_id,
+        )
+        page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
+        paged_response = ToolAccessAuditListResponse(
+            total_count=response.total_count,
+            items=page_items,
+        )
+        return success_envelope(
+            paged_response,
             request_id=request_id,
             next_cursor=next_cursor,
             has_more=has_more,
@@ -672,18 +948,21 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         cycle_id: str,
         control_state_id: str | None = None,
         severity: str | None = None,
+        claim_state: str | None = None,
         sort: str = "recent",
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
         response = service.list_review_queue(
             cycle_id,
             control_state_id=control_state_id,
             severity=severity,
+            claim_state=claim_state,
             sort=sort,
+            organization_id=auth_context.organization_id,
+            viewer_user_id=auth_context.user_id,
         )
         page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
         return success_envelope(
@@ -704,11 +983,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
         response = service.list_imports(
             cycle_id,
             ingest_status=status or ingest_status,
             source_type=source_type,
+            organization_id=auth_context.organization_id,
         )
         page_items, next_cursor, has_more = paginate_collection(response.items, cursor=cursor, limit=limit)
         return success_envelope(
@@ -729,8 +1008,13 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
-        response = service.create_upload_import(cycle_id, command, idempotency_key=idempotency_key)
+        response = service.create_upload_import(
+            cycle_id,
+            command,
+            idempotency_key=idempotency_key,
+            organization_id=auth_context.organization_id,
+            auth_context=auth_context,
+        )
         return success_envelope(
             response,
             request_id=request_id,
@@ -748,8 +1032,13 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
-        response = service.create_external_import(cycle_id, command, idempotency_key=idempotency_key)
+        response = service.create_external_import(
+            cycle_id,
+            command,
+            idempotency_key=idempotency_key,
+            organization_id=auth_context.organization_id,
+            auth_context=auth_context,
+        )
         return success_envelope(
             response,
             request_id=request_id,
@@ -775,9 +1064,52 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.review_mapping(mapping_id, command, idempotency_key=idempotency_key),
+            service.review_mapping(
+                mapping_id,
+                command,
+                idempotency_key=idempotency_key,
+                organization_id=auth_context.organization_id,
+                reviewer_id=auth_context.user_id,
+            ),
+            request_id=request_id,
+        )
+
+    @app.post("/api/v1/auditflow/mappings/{mapping_id}/claim")
+    def claim_mapping(
+        mapping_id: str,
+        command: MappingClaimCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_reviewer_access),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.claim_mapping(
+                mapping_id,
+                command,
+                idempotency_key=idempotency_key,
+                organization_id=auth_context.organization_id,
+                reviewer_id=auth_context.user_id,
+            ),
+            request_id=request_id,
+        )
+
+    @app.post("/api/v1/auditflow/mappings/{mapping_id}/claim/release")
+    def release_mapping_claim(
+        mapping_id: str,
+        command: MappingClaimReleaseCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_reviewer_access),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.release_mapping_claim(
+                mapping_id,
+                command,
+                idempotency_key=idempotency_key,
+                organization_id=auth_context.organization_id,
+                reviewer_id=auth_context.user_id,
+            ),
             request_id=request_id,
         )
 
@@ -789,9 +1121,14 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.decide_gap(gap_id, command, idempotency_key=idempotency_key),
+            service.decide_gap(
+                gap_id,
+                command,
+                idempotency_key=idempotency_key,
+                organization_id=auth_context.organization_id,
+                reviewer_id=auth_context.user_id,
+            ),
             request_id=request_id,
         )
 
@@ -805,11 +1142,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
         items = service.list_narratives(
             cycle_id,
             snapshot_version=snapshot_version,
             narrative_type=narrative_type,
+            organization_id=auth_context.organization_id,
         )
         page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
         return success_envelope(
@@ -825,9 +1162,12 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_product_admin_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.process_cycle(command),
+            service.process_cycle(
+                command.model_copy(update={"organization_id": auth_context.organization_id}),
+                organization_id=auth_context.organization_id,
+                auth_context=auth_context,
+            ),
             request_id=request_id,
         )
 
@@ -841,11 +1181,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
         items = service.list_export_packages(
             cycle_id,
             snapshot_version=snapshot_version,
             status=status,
+            organization_id=auth_context.organization_id,
         )
         page_items, next_cursor, has_more = paginate_collection(items, cursor=cursor, limit=limit)
         return success_envelope(
@@ -866,8 +1206,13 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_reviewer_access),
     ) -> dict[str, object]:
-        del auth_context
-        response = service.create_export_package(cycle_id, command, idempotency_key=idempotency_key)
+        response = service.create_export_package(
+            cycle_id,
+            command.model_copy(update={"organization_id": auth_context.organization_id}),
+            idempotency_key=idempotency_key,
+            organization_id=auth_context.organization_id,
+            auth_context=auth_context,
+        )
         return success_envelope(
             response,
             request_id=request_id,
@@ -880,9 +1225,12 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_product_admin_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.generate_export(command),
+            service.generate_export(
+                command.model_copy(update={"organization_id": auth_context.organization_id}),
+                organization_id=auth_context.organization_id,
+                auth_context=auth_context,
+            ),
             request_id=request_id,
         )
 
@@ -892,9 +1240,11 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         request_id: str | None = Header(default=None, alias="X-Request-Id"),
         auth_context=Depends(require_viewer_access),
     ) -> dict[str, object]:
-        del auth_context
         return success_envelope(
-            service.get_export_package(package_id),
+            service.get_export_package(
+                package_id,
+                organization_id=auth_context.organization_id,
+            ),
             request_id=request_id,
         )
 

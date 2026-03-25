@@ -108,6 +108,7 @@ class WorkflowExecutionServiceTests(unittest.TestCase):
                 workflow_state={"audit_cycle_id": "cycle-1", "evidence_item_id": "evidence-1"},
                 retrieval={"evidence_chunk_refs": [{"kind": "evidence_chunk", "id": "chunk-1"}]},
                 database={"in_scope_controls": ["control-1"], "framework_name": "SOC2"},
+                memory={"accepted_pattern_memories": []},
             ),
         }
 

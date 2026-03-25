@@ -6,15 +6,47 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from auditflow_app.bootstrap import build_import_worker
+from auditflow_app.bootstrap import build_app_service, build_import_worker
+from auditflow_app.connectors import ConnectorFetchResult
+from auditflow_app.repository import EvidenceRow
 from auditflow_app.sample_payloads import external_import_command, upload_import_command
 from auditflow_app.shared_runtime import load_shared_agent_platform
-from auditflow_app.worker import AuditFlowImportWorkerSupervisor
+from auditflow_app.worker import AuditFlowImportWorker, AuditFlowImportWorkerSupervisor
+
+
+class _FakeConnectorResolver:
+    def __init__(self, result: ConnectorFetchResult | None) -> None:
+        self.result = result
+        self.calls: list[dict[str, object]] = []
+
+    def fetch(
+        self,
+        provider: str,
+        *,
+        selector: str | None,
+        query: str | None,
+        display_name: str,
+        source_locator: str | None,
+        connection_id: str | None = None,
+    ) -> ConnectorFetchResult | None:
+        self.calls.append(
+            {
+                "provider": provider,
+                "selector": selector,
+                "query": query,
+                "display_name": display_name,
+                "source_locator": source_locator,
+                "connection_id": connection_id,
+            }
+        )
+        return self.result
 
 
 class AuditFlowWorkerTests(unittest.TestCase):
@@ -60,6 +92,67 @@ class AuditFlowWorkerTests(unittest.TestCase):
         self.assertEqual(results[1].attempted_count, 0)
         self.assertEqual(imports.items[0].metadata["handler_name"], "confluence")
         self.assertEqual(imports.items[0].metadata["provider_object_type"], "page")
+
+    def test_worker_uses_live_connector_payload_when_resolver_returns_content(self) -> None:
+        app_service = build_app_service()
+        self.addCleanup(app_service.close)
+        resolver = _FakeConnectorResolver(
+            ConnectorFetchResult(
+                display_name="Quarterly access review",
+                source_locator="https://jira.example.test/browse/SEC-222",
+                artifact_text=(
+                    "Jira issue SEC-222\n\n"
+                    "Summary: Quarterly access review\n"
+                    "Description: Emergency access was reviewed and revoked."
+                ),
+                extracted_text_or_summary="Quarterly access review",
+                metadata_update={"connector_source": "jira-live"},
+                allowed_evidence_types=["ticket"],
+            )
+        )
+        worker = AuditFlowImportWorker(app_service, connector_resolver=resolver)
+
+        accepted = worker.app_service.create_external_import(
+            "cycle-1",
+            external_import_command(provider="jira", upstream_ids=["SEC-222"]),
+        )
+        result = worker.dispatch_once()
+        imports = worker.app_service.list_imports("cycle-1", source_type="jira")
+
+        with worker.app_service.repository.session_factory() as session:
+            evidence_row = session.scalars(
+                select(EvidenceRow)
+                .where(EvidenceRow.audit_cycle_id == "cycle-1")
+                .where(EvidenceRow.title == "Quarterly access review")
+                .order_by(EvidenceRow.captured_at.desc())
+            ).first()
+
+        self.assertEqual(result.dispatched_count, 1)
+        self.assertEqual(accepted.accepted_count, 1)
+        self.assertEqual(resolver.calls[0]["selector"], "SEC-222")
+        self.assertEqual(imports.items[0].metadata["fetch_mode"], "live_http")
+        self.assertEqual(imports.items[0].metadata["connector_source"], "jira-live")
+        self.assertIsNotNone(evidence_row)
+        assert evidence_row is not None
+        self.assertIn("Emergency access was reviewed", evidence_row.summary)
+
+    def test_worker_falls_back_to_synthetic_payload_when_live_connector_returns_none(self) -> None:
+        app_service = build_app_service()
+        self.addCleanup(app_service.close)
+        worker = AuditFlowImportWorker(
+            app_service,
+            connector_resolver=_FakeConnectorResolver(None),
+        )
+
+        worker.app_service.create_external_import(
+            "cycle-1",
+            external_import_command(provider="jira", upstream_ids=["SEC-333"]),
+        )
+        result = worker.dispatch_once()
+        imports = worker.app_service.list_imports("cycle-1", source_type="jira")
+
+        self.assertEqual(result.dispatched_count, 1)
+        self.assertEqual(imports.items[0].metadata["fetch_mode"], "synthetic_fallback")
 
     def test_supervisor_retries_transient_failure_and_emits_heartbeat(self) -> None:
         emitted: list[object] = []

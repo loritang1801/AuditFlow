@@ -95,6 +95,14 @@ class MappingListResponse(AuditFlowModel):
     items: list[MappingSummary] = Field(default_factory=list)
 
 
+class ToolAccessSummary(AuditFlowModel):
+    total_count: int = 0
+    latest_completed_at: datetime | None = None
+    latest_workflow_run_id: str | None = None
+    recent_tool_names: list[str] = Field(default_factory=list)
+    execution_status_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class ReviewQueueItem(AuditFlowModel):
     mapping_id: str
     control_state_id: str
@@ -106,7 +114,12 @@ class ReviewQueueItem(AuditFlowModel):
     confidence: float | None = None
     ranking_score: float | None = None
     citation_refs: list[dict[str, Any]] = Field(default_factory=list)
+    claimed_by_user_id: str | None = None
+    claimed_at: datetime | None = None
+    claim_expires_at: datetime | None = None
+    claim_status: Literal["unclaimed", "claimed_by_me", "claimed_by_other"] = "unclaimed"
     updated_at: datetime
+    tool_access_summary: ToolAccessSummary = Field(default_factory=ToolAccessSummary)
 
 
 class ReviewQueueResponse(AuditFlowModel):
@@ -133,6 +146,34 @@ class ReviewDecisionListResponse(AuditFlowModel):
     cycle_id: str
     total_count: int
     items: list[ReviewDecisionSummary] = Field(default_factory=list)
+
+
+class ToolAccessAuditSummary(AuditFlowModel):
+    tool_access_audit_id: str
+    workflow_run_id: str
+    node_name: str | None = None
+    tool_call_id: str
+    tool_name: str
+    tool_version: str
+    adapter_type: str
+    subject_type: str
+    subject_id: str
+    workspace_id: str | None = None
+    user_id: str | None = None
+    role: str | None = None
+    session_id: str | None = None
+    connection_id: str | None = None
+    execution_status: str
+    error_code: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    source_locator: str | None = None
+    recorded_at: datetime
+    completed_at: datetime
+
+
+class ToolAccessAuditListResponse(AuditFlowModel):
+    total_count: int
+    items: list[ToolAccessAuditSummary] = Field(default_factory=list)
 
 
 class EvidenceImportSummary(AuditFlowModel):
@@ -261,6 +302,7 @@ class AuditCycleDashboardResponse(AuditFlowModel):
     export_ready: bool
     controls: list[ControlCoverageSummary] = Field(default_factory=list)
     latest_export_package: ExportPackageSummary | None = None
+    tool_access_summary: ToolAccessSummary = Field(default_factory=ToolAccessSummary)
 
 
 class ControlDetailResponse(AuditFlowModel):
@@ -268,6 +310,7 @@ class ControlDetailResponse(AuditFlowModel):
     accepted_mappings: list[MappingSummary] = Field(default_factory=list)
     pending_mappings: list[MappingSummary] = Field(default_factory=list)
     open_gaps: list[GapSummary] = Field(default_factory=list)
+    tool_access_summary: ToolAccessSummary = Field(default_factory=ToolAccessSummary)
 
 
 class MappingReviewCommand(AuditFlowModel):
@@ -282,6 +325,24 @@ class MappingReviewResponse(AuditFlowModel):
     mapping_id: str
     mapping_status: str
     control_state: ControlCoverageSummary
+
+
+class MappingClaimCommand(AuditFlowModel):
+    lease_seconds: int = Field(default=900, ge=60, le=7200)
+    expected_updated_at: datetime | None = None
+
+
+class MappingClaimReleaseCommand(AuditFlowModel):
+    expected_updated_at: datetime | None = None
+
+
+class MappingClaimResponse(AuditFlowModel):
+    mapping_id: str
+    mapping_status: str
+    claimed_by_user_id: str | None = None
+    claimed_at: datetime | None = None
+    claim_expires_at: datetime | None = None
+    claim_status: Literal["unclaimed", "claimed_by_me", "claimed_by_other"] = "unclaimed"
 
 
 class GapDecisionCommand(AuditFlowModel):
@@ -347,9 +408,12 @@ class CycleProcessingCommand(AuditFlowModel):
     allowed_evidence_types: list[str] = Field(default_factory=lambda: ["ticket"])
     evidence_item_id: str = "evidence-1"
     evidence_chunk_refs: list[dict[str, Any]] = Field(default_factory=list)
-    in_scope_controls: list[str] = Field(default_factory=list)
+    in_scope_controls: list[dict[str, Any] | str] = Field(default_factory=list)
     framework_name: str = "SOC2"
     mapping_payloads: list[dict[str, Any]] = Field(default_factory=list)
+    mapping_memory_context: list[dict[str, Any]] = Field(default_factory=list)
+    challenge_memory_context: list[dict[str, Any]] = Field(default_factory=list)
+    freshness_policy: dict[str, Any] = Field(default_factory=lambda: {"mode": "standard"})
     control_text: str = ""
     organization_id: str = "org-1"
     workspace_id: str = "ws-1"
@@ -397,3 +461,19 @@ class AuditFlowWorkflowStateResponse(AuditFlowModel):
 class HealthResponse(AuditFlowModel):
     status: Literal["ok"]
     product: Literal["auditflow"]
+
+
+class RuntimeCapability(AuditFlowModel):
+    requested_mode: str
+    effective_mode: str
+    backend_id: str
+    fallback_reason: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeCapabilitiesResponse(AuditFlowModel):
+    product: Literal["auditflow"] = "auditflow"
+    model_provider: RuntimeCapability
+    embedding_provider: RuntimeCapability
+    vector_search: RuntimeCapability
+    connectors: dict[str, RuntimeCapability] = Field(default_factory=dict)

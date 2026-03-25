@@ -152,12 +152,16 @@ Shared authentication, response envelope, and approval APIs are defined in the s
   "mapping_id": "uuid",
   "control_state_id": "uuid",
   "control_code": "CC6.1",
+  "coverage_status": "pending_review",
   "snapshot_version": 3,
   "evidence_id": "uuid",
-  "mapping_status": "proposed",
   "confidence": 0.84,
   "ranking_score": 0.91,
-  "rationale": "Evidence references user access review completion.",
+  "rationale_summary": "Evidence references user access review completion.",
+  "claimed_by_user_id": "user-reviewer-1",
+  "claimed_at": "2026-03-16T09:00:00Z",
+  "claim_expires_at": "2026-03-16T09:15:00Z",
+  "claim_status": "claimed_by_me",
   "citation_refs": [
     {
       "chunk_id": "uuid",
@@ -379,6 +383,7 @@ Rules:
 
 1. Exactly one of `upstream_ids` or `query` must be supplied
 2. `provider` must match the referenced connection
+3. Import workers may resolve the external source through env-configured live connector fetch; otherwise they fall back to synthetic normalization using the requested selector/query
 
 Response:
 
@@ -391,6 +396,64 @@ Response:
   },
   "meta": {
     "workflow_run_id": "uuid"
+  }
+}
+```
+
+### 4.7.1 `GET /api/v1/auditflow/runtime-capabilities`
+
+Purpose: inspect the effective runtime modes currently active for model provider, embedding provider, vector search, and external connectors.
+
+Auth: `product_admin` or stronger
+
+Response:
+
+- `200 OK`
+
+```json
+{
+  "data": {
+    "product": "auditflow",
+    "model_provider": {
+      "requested_mode": "auto",
+      "effective_mode": "local",
+      "backend_id": "heuristic-local",
+      "fallback_reason": "MODEL_PROVIDER_NOT_CONFIGURED",
+      "details": {
+        "configured_model": null,
+        "fallback_enabled": true
+      }
+    },
+    "embedding_provider": {
+      "requested_mode": "auto",
+      "effective_mode": "local",
+      "backend_id": "semantic-v1",
+      "fallback_reason": "OPENAI_EMBEDDING_NOT_CONFIGURED",
+      "details": {
+        "vector_dimension": 96
+      }
+    },
+    "vector_search": {
+      "requested_mode": "auto",
+      "effective_mode": "ann",
+      "backend_id": "ann-metadata-json",
+      "fallback_reason": null,
+      "details": {
+        "dialect_name": "sqlite",
+        "semantic_candidate_limit": 64
+      }
+    },
+    "connectors": {
+      "jira": {
+        "requested_mode": "auto",
+        "effective_mode": "local",
+        "backend_id": "jira-synthetic",
+        "fallback_reason": "CONNECTOR_HTTP_TEMPLATE_NOT_CONFIGURED",
+        "details": {
+          "has_url_template": false
+        }
+      }
+    }
   }
 }
 ```
@@ -566,7 +629,8 @@ Query params:
 - `cycle_id` required
 - `control_state_id`
 - `severity`
-- `sort=ranking|recent`
+- `claim_state=unclaimed|claimed_by_me|claimed_by_other`
+- `sort=ranking|recent|claim`
 - `cursor`
 - `limit`
 
@@ -616,6 +680,7 @@ Rules:
 1. `target_control_id` is required only when `decision = reassign`
 2. `expected_updated_at` is required for optimistic concurrency
 3. If supplied, `expected_snapshot_version` must match the mapping's stored snapshot and the cycle's current snapshot
+4. If another reviewer holds an active claim on the mapping, the review is rejected with `REVIEW_CLAIM_CONFLICT`
 
 Response:
 
@@ -640,7 +705,84 @@ Errors:
 
 - `MAPPING_REVIEW_CONFLICT`
 - `MAPPING_ALREADY_TERMINAL`
+- `REVIEW_CLAIM_CONFLICT`
 - `TARGET_CONTROL_NOT_FOUND`
+
+### 4.13.1 `POST /api/v1/auditflow/mappings/:mappingId/claim`
+
+Purpose: claim one review-queue mapping for a reviewer lease window.
+
+Auth: `reviewer` or stronger
+
+Headers:
+
+- `Idempotency-Key` required
+
+Request body:
+
+```json
+{
+  "lease_seconds": 900,
+  "expected_updated_at": "2026-03-16T09:00:00Z"
+}
+```
+
+Response:
+
+- `200 OK`
+
+```json
+{
+  "data": {
+    "mapping_id": "uuid",
+    "mapping_status": "proposed",
+    "claimed_by_user_id": "user-reviewer-1",
+    "claimed_at": "2026-03-16T09:00:00Z",
+    "claim_expires_at": "2026-03-16T09:15:00Z",
+    "claim_status": "claimed_by_me"
+  }
+}
+```
+
+Errors:
+
+- `REVIEW_CLAIM_CONFLICT`
+- `MAPPING_ALREADY_TERMINAL`
+
+### 4.13.2 `POST /api/v1/auditflow/mappings/:mappingId/claim/release`
+
+Purpose: release an active reviewer claim so another reviewer can pick up the mapping.
+
+Auth: `reviewer` or stronger
+
+Headers:
+
+- `Idempotency-Key` required
+
+Request body:
+
+```json
+{
+  "expected_updated_at": "2026-03-16T09:00:00Z"
+}
+```
+
+Response:
+
+- `200 OK`
+
+```json
+{
+  "data": {
+    "mapping_id": "uuid",
+    "mapping_status": "proposed",
+    "claimed_by_user_id": null,
+    "claimed_at": null,
+    "claim_expires_at": null,
+    "claim_status": "unclaimed"
+  }
+}
+```
 
 ### 4.14 `POST /api/v1/auditflow/gaps/:gapId/decision`
 
