@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
+
 from .auth import AuditFlowAuthorizer, SqlAlchemyAuditFlowAuthService
 from .product_gateway import AuditFlowProductModelGateway
 from .replay_harness import AuditFlowReplayHarness
@@ -30,12 +33,25 @@ def list_supported_workflows() -> tuple[str, ...]:
     return SUPPORTED_WORKFLOW_NAMES
 
 
+def _create_runtime_engine(database_url: str | None = None):
+    resolved_database_url = database_url or "sqlite+pysqlite:///:memory:"
+    if resolved_database_url.startswith("sqlite"):
+        engine_kwargs: dict[str, object] = {
+            "connect_args": {"check_same_thread": False},
+        }
+        if ":memory:" in resolved_database_url or "mode=memory" in resolved_database_url:
+            engine_kwargs["poolclass"] = StaticPool
+        return create_engine(resolved_database_url, **engine_kwargs)
+    return create_engine(resolved_database_url)
+
+
 def build_runtime_components(*, database_url: str | None = None) -> dict[str, Any]:
     ap, registry = _build_registry()
     catalog = ap.build_default_runtime_catalog()
     prompt_service = ap.PromptAssemblyService(catalog)
     tool_executor = ap.ToolExecutor(catalog)
-    runtime_stores = ap.create_sqlalchemy_runtime_stores(database_url)
+    runtime_engine = _create_runtime_engine(database_url)
+    runtime_stores = ap.create_sqlalchemy_runtime_stores(engine=runtime_engine)
     repository = SqlAlchemyAuditFlowRepository.from_runtime_stores(runtime_stores)
     auth_service = SqlAlchemyAuditFlowAuthService.from_runtime_stores(runtime_stores)
     register_auditflow_product_tool_adapters(

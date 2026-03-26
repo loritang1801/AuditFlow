@@ -17,6 +17,7 @@ from auditflow_app.product_gateway import (
     AuditFlowProductModelGateway,
     _OpenAIResponsesAuditFlowProductGateway,
 )
+from auditflow_app.repository import SqlAlchemyAuditFlowRepository
 from auditflow_app.shared_runtime import load_shared_agent_platform
 
 
@@ -192,6 +193,8 @@ class AuditFlowProductGatewayTests(unittest.TestCase):
         self.assertEqual(capabilities.model_provider.effective_mode, "local")
         self.assertEqual(capabilities.embedding_provider.effective_mode, "local")
         self.assertEqual(capabilities.vector_search.backend_id, "ann-metadata-json")
+        self.assertEqual(capabilities.vector_search.details["pgvector_native_dimension"], 96)
+        self.assertTrue(capabilities.vector_search.details["pgvector_dimension_supported"])
         self.assertIn("jira", capabilities.connectors)
 
     def test_repository_reports_pgvector_request_fallback_when_backend_unavailable(self) -> None:
@@ -208,6 +211,54 @@ class AuditFlowProductGatewayTests(unittest.TestCase):
         self.assertEqual(capabilities.vector_search.requested_mode, "pgvector")
         self.assertEqual(capabilities.vector_search.effective_mode, "ann")
         self.assertEqual(capabilities.vector_search.fallback_reason, "PGVECTOR_BACKEND_NOT_AVAILABLE")
+
+    def test_repository_reports_pgvector_dimension_mismatch_when_native_backend_cannot_store_requested_dimension(self) -> None:
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "AUDITFLOW_VECTOR_SEARCH_MODE": "pgvector",
+                    "AUDITFLOW_EMBEDDING_PROVIDER": "openai",
+                    "AUDITFLOW_OPENAI_EMBEDDING_MODEL": "text-embedding-3-small",
+                    "AUDITFLOW_OPENAI_EMBEDDING_DIMENSIONS": "128",
+                    "OPENAI_API_KEY": "test-key",
+                },
+                clear=False,
+            ),
+            patch.object(SqlAlchemyAuditFlowRepository, "_pgvector_backend_ready", return_value=True),
+            patch.object(
+                SqlAlchemyAuditFlowRepository,
+                "_build_openai_embedding_client",
+                return_value=_FakeEmbeddingClient([1.0] * 128),
+            ),
+        ):
+            service = build_app_service()
+            self.addCleanup(service.close)
+            capabilities = service.get_runtime_capabilities()
+
+        self.assertEqual(capabilities.vector_search.requested_mode, "pgvector")
+        self.assertEqual(capabilities.vector_search.effective_mode, "ann")
+        self.assertEqual(capabilities.vector_search.fallback_reason, "PGVECTOR_DIMENSION_MISMATCH")
+        self.assertEqual(capabilities.vector_search.details["pgvector_native_dimension"], 96)
+        self.assertFalse(capabilities.vector_search.details["pgvector_dimension_supported"])
+
+    def test_repository_prefers_pgvector_when_native_backend_and_dimension_match(self) -> None:
+        with (
+            patch.dict(
+                "os.environ",
+                {"AUDITFLOW_VECTOR_SEARCH_MODE": "auto"},
+                clear=False,
+            ),
+            patch.object(SqlAlchemyAuditFlowRepository, "_pgvector_backend_ready", return_value=True),
+        ):
+            service = build_app_service()
+            self.addCleanup(service.close)
+            capabilities = service.get_runtime_capabilities()
+
+        self.assertEqual(capabilities.vector_search.requested_mode, "auto")
+        self.assertEqual(capabilities.vector_search.effective_mode, "pgvector")
+        self.assertEqual(capabilities.vector_search.backend_id, "pgvector-native")
+        self.assertTrue(capabilities.vector_search.details["pgvector_dimension_supported"])
 
 
 if __name__ == "__main__":

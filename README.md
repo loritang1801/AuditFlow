@@ -70,6 +70,14 @@ python .\scripts\run_demo_workflow.py
 python .\scripts\run_replay_harness.py
 ```
 
+- Run the vector-search validation/benchmark harness:
+
+```powershell
+python .\scripts\run_vector_search_benchmark.py --mode ann
+python .\scripts\run_vector_search_benchmark.py --database-url postgresql+psycopg://... --mode pgvector --expected-effective-mode pgvector
+python .\scripts\run_vector_search_benchmark.py --compare-mode ann=ann --compare-mode flat=flat
+```
+
 - Query cycle-scoped evidence search or memory records from the FastAPI surface:
 
 ```text

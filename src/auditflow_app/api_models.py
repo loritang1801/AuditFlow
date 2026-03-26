@@ -114,10 +114,17 @@ class ReviewQueueItem(AuditFlowModel):
     confidence: float | None = None
     ranking_score: float | None = None
     citation_refs: list[dict[str, Any]] = Field(default_factory=list)
+    assigned_reviewer_id: str | None = None
+    assigned_at: datetime | None = None
+    assignment_note: str | None = None
+    assignment_status: Literal["unassigned", "assigned_to_me", "assigned_to_other"] = "unassigned"
     claimed_by_user_id: str | None = None
     claimed_at: datetime | None = None
     claim_expires_at: datetime | None = None
     claim_status: Literal["unclaimed", "claimed_by_me", "claimed_by_other"] = "unclaimed"
+    priority_tier: Literal["urgent", "high", "medium", "low"] = "medium"
+    priority_score: float = 0.0
+    priority_reason: str = ""
     updated_at: datetime
     tool_access_summary: ToolAccessSummary = Field(default_factory=ToolAccessSummary)
 
@@ -339,6 +346,33 @@ class MappingClaimReleaseCommand(AuditFlowModel):
 class MappingClaimResponse(AuditFlowModel):
     mapping_id: str
     mapping_status: str
+    assigned_reviewer_id: str | None = None
+    assigned_at: datetime | None = None
+    assignment_note: str | None = None
+    assignment_status: Literal["unassigned", "assigned_to_me", "assigned_to_other"] = "unassigned"
+    claimed_by_user_id: str | None = None
+    claimed_at: datetime | None = None
+    claim_expires_at: datetime | None = None
+    claim_status: Literal["unclaimed", "claimed_by_me", "claimed_by_other"] = "unclaimed"
+
+
+class MappingAssignCommand(AuditFlowModel):
+    reviewer_user_id: str = Field(min_length=1)
+    note: str = ""
+    expected_updated_at: datetime | None = None
+
+
+class MappingAssignReleaseCommand(AuditFlowModel):
+    expected_updated_at: datetime | None = None
+
+
+class MappingAssignmentResponse(AuditFlowModel):
+    mapping_id: str
+    mapping_status: str
+    assigned_reviewer_id: str | None = None
+    assigned_at: datetime | None = None
+    assignment_note: str | None = None
+    assignment_status: Literal["unassigned", "assigned_to_me", "assigned_to_other"] = "unassigned"
     claimed_by_user_id: str | None = None
     claimed_at: datetime | None = None
     claim_expires_at: datetime | None = None

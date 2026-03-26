@@ -10,6 +10,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, Date, DateTime, Float, Integer, String, Text, TypeDecorator, UniqueConstraint, and_, or_, select, text
+from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -32,6 +33,9 @@ from .api_models import (
     GapSummary,
     ImportAcceptedResponse,
     ImportListResponse,
+    MappingAssignCommand,
+    MappingAssignmentResponse,
+    MappingAssignReleaseCommand,
     MappingClaimCommand,
     MappingClaimResponse,
     MappingClaimReleaseCommand,
@@ -108,6 +112,7 @@ DEFAULT_REVIEW_CLAIM_LEASE_SECONDS = 900
 LEXICAL_MODEL_NAME = "lexical-v1"
 SEMANTIC_MODEL_NAME = "semantic-v1"
 EMBEDDING_VECTOR_DIMENSION = 96
+PGVECTOR_NATIVE_DIMENSION = EMBEDDING_VECTOR_DIMENSION
 SEMANTIC_SYNONYMS = {
     "access": ("permission", "permissions", "privilege", "privileged", "entitlement", "entitlements"),
     "approval": ("approve", "approved", "signoff", "authorized"),
@@ -140,6 +145,67 @@ def _configure_pgvector_dialect(engine: Engine) -> None:
         except Exception:
             ready = False
     setattr(engine.dialect, "_auditflow_pgvector_ready", ready)
+
+
+def _configure_pgvector_indexes(engine: Engine) -> None:
+    index_ready = False
+    index_reason = None
+    if engine.dialect.name == "postgresql" and getattr(engine.dialect, "_auditflow_pgvector_ready", False):
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS ix_auditflow_semantic_vector_scope
+                        ON auditflow_semantic_vector (
+                            organization_id,
+                            workspace_id,
+                            cycle_id,
+                            subject_type,
+                            model_name,
+                            created_at DESC,
+                            chunk_index
+                        )
+                        """
+                    )
+                )
+                connection.execute(
+                    text(
+                        """
+                        CREATE INDEX IF NOT EXISTS ix_auditflow_semantic_vector_embedding_cosine
+                        ON auditflow_semantic_vector
+                        USING hnsw (embedding_vector vector_cosine_ops)
+                        """
+                    )
+                )
+            index_ready = True
+        except Exception as exc:
+            index_reason = exc.__class__.__name__
+    setattr(engine.dialect, "_auditflow_pgvector_index_ready", index_ready)
+    setattr(engine.dialect, "_auditflow_pgvector_index_reason", index_reason)
+
+
+def _ensure_mapping_table_columns(engine: Engine) -> None:
+    inspector = sqlalchemy_inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "auditflow_mapping" not in table_names:
+        return
+    existing_columns = {column["name"] for column in inspector.get_columns("auditflow_mapping")}
+    missing_columns = {
+        "reviewer_assigned_user_id": "VARCHAR(255)",
+        "reviewer_assigned_at": "DATETIME",
+        "reviewer_assignment_updated_by_user_id": "VARCHAR(255)",
+        "reviewer_assignment_note": "TEXT",
+    }
+    with engine.begin() as connection:
+        for column_name, column_type in missing_columns.items():
+            if column_name in existing_columns:
+                continue
+            connection.execute(
+                text(
+                    f"ALTER TABLE auditflow_mapping ADD COLUMN {column_name} {column_type}"
+                )
+            )
 
 
 class NativeVectorType(TypeDecorator):
@@ -306,6 +372,8 @@ class AuditFlowRepository(Protocol):
         control_state_id: str | None = None,
         severity: str | None = None,
         claim_state: str | None = None,
+        assignment_state: str | None = None,
+        priority: str | None = None,
         sort: str = "recent",
         organization_id: str | None = None,
         viewer_user_id: str | None = None,
@@ -397,6 +465,16 @@ class AuditFlowRepository(Protocol):
         reviewer_id: str,
     ) -> MappingClaimResponse: ...
 
+    def assign_mapping(
+        self,
+        mapping_id: str,
+        command: MappingAssignCommand,
+        *,
+        organization_id: str | None = None,
+        reviewer_id: str,
+        reviewer_role: str | None = None,
+    ) -> MappingAssignmentResponse: ...
+
     def release_mapping_claim(
         self,
         mapping_id: str,
@@ -405,6 +483,16 @@ class AuditFlowRepository(Protocol):
         organization_id: str | None = None,
         reviewer_id: str,
     ) -> MappingClaimResponse: ...
+
+    def release_mapping_assignment(
+        self,
+        mapping_id: str,
+        command: MappingAssignReleaseCommand,
+        *,
+        organization_id: str | None = None,
+        reviewer_id: str,
+        reviewer_role: str | None = None,
+    ) -> MappingAssignmentResponse: ...
 
     def list_imports(
         self,
@@ -688,6 +776,10 @@ class MappingRow(Base):
     reviewer_claimed_by_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reviewer_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     reviewer_claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    reviewer_assigned_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewer_assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    reviewer_assignment_updated_by_user_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewer_assignment_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 
 
@@ -879,7 +971,7 @@ class SemanticVectorRow(Base):
     ann_bucket_keys: Mapped[list[str]] = mapped_column(JSON)
     semantic_terms: Mapped[list[str]] = mapped_column(JSON)
     embedding_dimension: Mapped[int] = mapped_column(Integer)
-    embedding_vector: Mapped[list[float] | None] = mapped_column(NativeVectorType(EMBEDDING_VECTOR_DIMENSION), nullable=True)
+    embedding_vector: Mapped[list[float] | None] = mapped_column(NativeVectorType(PGVECTOR_NATIVE_DIMENSION), nullable=True)
     model_name: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False))
 
@@ -938,6 +1030,8 @@ class ExportPackageRow(Base):
 def create_auditflow_tables(engine: Engine) -> None:
     _configure_pgvector_dialect(engine)
     Base.metadata.create_all(engine)
+    _ensure_mapping_table_columns(engine)
+    _configure_pgvector_indexes(engine)
 
 
 class SqlAlchemyAuditFlowRepository:
@@ -956,9 +1050,6 @@ class SqlAlchemyAuditFlowRepository:
             allowed_modes=("auto", "ann", "flat", "pgvector"),
             default="auto",
         )
-        self.vector_search_mode, self.vector_search_backend_id, self.vector_search_fallback_reason = (
-            self._resolve_vector_search_backend()
-        )
         self.semantic_candidate_limit = self._resolve_semantic_candidate_limit()
         self.semantic_ann_bucket_count = self._resolve_semantic_ann_bucket_count()
         self.semantic_model_name = self._resolve_semantic_model_name()
@@ -969,6 +1060,9 @@ class SqlAlchemyAuditFlowRepository:
         if self._openai_embedding_client is None and self.embedding_provider_mode != "openai":
             self.semantic_model_name = SEMANTIC_MODEL_NAME
             self.semantic_vector_dimension = EMBEDDING_VECTOR_DIMENSION
+        self.vector_search_mode, self.vector_search_backend_id, self.vector_search_fallback_reason = (
+            self._resolve_vector_search_backend()
+        )
         create_auditflow_tables(engine)
         self.seed_if_empty()
         self.backfill_retrieval_state()
@@ -1103,20 +1197,40 @@ class SqlAlchemyAuditFlowRepository:
         return 8
 
     def _pgvector_backend_ready(self) -> bool:
-        return bool(getattr(self.engine.dialect, "_auditflow_pgvector_ready", False))
+        return (
+            self.engine.dialect.name == "postgresql"
+            and bool(getattr(self.engine.dialect, "_auditflow_pgvector_ready", False))
+        )
+
+    def _pgvector_index_ready(self) -> bool:
+        return (
+            self.engine.dialect.name == "postgresql"
+            and bool(getattr(self.engine.dialect, "_auditflow_pgvector_index_ready", False))
+        )
+
+    def _pgvector_native_dimension_supported(self) -> bool:
+        return int(self.semantic_vector_dimension) == PGVECTOR_NATIVE_DIMENSION
 
     def _resolve_vector_search_backend(self) -> tuple[str, str, str | None]:
         requested_mode = self.vector_search_requested_mode
+        backend_ready = self._pgvector_backend_ready()
+        native_dimension_supported = self._pgvector_native_dimension_supported()
         if requested_mode == "flat":
             return "flat", "flat-metadata-json", None
         if requested_mode == "ann":
             return "ann", "ann-metadata-json", None
         if requested_mode == "auto":
-            if self._pgvector_backend_ready():
+            if backend_ready and native_dimension_supported:
                 return "pgvector", "pgvector-native", None
+            if backend_ready and not native_dimension_supported:
+                return "ann", "ann-metadata-json", "PGVECTOR_DIMENSION_MISMATCH"
             return "ann", "ann-metadata-json", None
         if requested_mode == "pgvector":
-            if self._pgvector_backend_ready():
+            if not backend_ready:
+                return "ann", "ann-metadata-json", "PGVECTOR_BACKEND_NOT_AVAILABLE"
+            if not native_dimension_supported:
+                return "ann", "ann-metadata-json", "PGVECTOR_DIMENSION_MISMATCH"
+            if backend_ready:
                 return "pgvector", "pgvector-native", None
             return "ann", "ann-metadata-json", "PGVECTOR_BACKEND_NOT_AVAILABLE"
         return "ann", "ann-metadata-json", "INVALID_VECTOR_SEARCH_MODE"
@@ -1190,6 +1304,10 @@ class SqlAlchemyAuditFlowRepository:
                 "dialect_name": self.engine.dialect.name,
                 "pgvector_package_available": _pgvector_package_available(),
                 "pgvector_backend_ready": self._pgvector_backend_ready(),
+                "pgvector_index_ready": self._pgvector_index_ready(),
+                "pgvector_index_reason": getattr(self.engine.dialect, "_auditflow_pgvector_index_reason", None),
+                "pgvector_native_dimension": PGVECTOR_NATIVE_DIMENSION,
+                "pgvector_dimension_supported": self._pgvector_native_dimension_supported(),
                 "semantic_candidate_limit": self.semantic_candidate_limit,
                 "semantic_ann_bucket_count": self.semantic_ann_bucket_count,
                 "semantic_model_name": self.semantic_model_name,
@@ -2256,7 +2374,11 @@ class SqlAlchemyAuditFlowRepository:
         query_vector: list[float],
         limit: int,
     ) -> list[dict[str, object]] | None:
-        if not self._pgvector_backend_ready():
+        if (
+            not self._pgvector_backend_ready()
+            or not self._pgvector_native_dimension_supported()
+            or len(query_vector) != PGVECTOR_NATIVE_DIMENSION
+        ):
             return None
         try:
             rows = session.execute(
@@ -2693,6 +2815,25 @@ class SqlAlchemyAuditFlowRepository:
             return "claimed_by_me"
         return "claimed_by_other"
 
+    @staticmethod
+    def _assigned_user_id(row: MappingRow) -> str | None:
+        value = (row.reviewer_assigned_user_id or "").strip()
+        return value or None
+
+    @classmethod
+    def _assignment_status(
+        cls,
+        row: MappingRow,
+        *,
+        viewer_user_id: str | None,
+    ) -> str:
+        assigned_user_id = cls._assigned_user_id(row)
+        if assigned_user_id is None:
+            return "unassigned"
+        if viewer_user_id is not None and assigned_user_id == viewer_user_id:
+            return "assigned_to_me"
+        return "assigned_to_other"
+
     @classmethod
     def _clear_mapping_claim(cls, row: MappingRow) -> None:
         row.reviewer_claimed_by_user_id = None
@@ -2700,10 +2841,68 @@ class SqlAlchemyAuditFlowRepository:
         row.reviewer_claim_expires_at = None
 
     @classmethod
+    def _clear_mapping_assignment(cls, row: MappingRow) -> None:
+        row.reviewer_assigned_user_id = None
+        row.reviewer_assigned_at = None
+        row.reviewer_assignment_updated_by_user_id = None
+        row.reviewer_assignment_note = None
+
+    @classmethod
     def _normalize_claim_lease_seconds(cls, lease_seconds: int | None) -> int:
         if lease_seconds is None:
             return DEFAULT_REVIEW_CLAIM_LEASE_SECONDS
         return max(60, min(int(lease_seconds), 7200))
+
+    @staticmethod
+    def _gap_severity_rank(severity: str | None) -> int:
+        return {"low": 1, "medium": 2, "high": 3}.get(str(severity or "").lower(), 0)
+
+    @classmethod
+    def _build_review_priority_profile(
+        cls,
+        row: MappingRow,
+        *,
+        highest_gap_severity: str | None,
+        now: datetime,
+    ) -> dict[str, object]:
+        age_hours = max((now - row.updated_at).total_seconds() / 3600.0, 0.0)
+        citation_count = len(row.citation_refs or [])
+        score = 18.0
+        score += min(float(citation_count), 4.0) * 4.0
+        score += min(age_hours / 12.0, 6.0) * 6.0
+        if row.mapping_status == "reassigned":
+            score += 24.0
+        if highest_gap_severity == "high":
+            score += 95.0
+        elif highest_gap_severity == "medium":
+            score += 52.0
+        elif highest_gap_severity == "low":
+            score += 24.0
+        if age_hours >= 72.0:
+            score += 14.0
+        if highest_gap_severity == "high" or score >= 110.0:
+            tier = "urgent"
+        elif highest_gap_severity == "medium" or row.mapping_status == "reassigned" or score >= 72.0:
+            tier = "high"
+        elif highest_gap_severity == "low" or score >= 38.0:
+            tier = "medium"
+        else:
+            tier = "low"
+        if highest_gap_severity is not None:
+            reason = f"Open {highest_gap_severity} severity gap exists on the same control."
+        elif row.mapping_status == "reassigned":
+            reason = "Mapping was reassigned and needs renewed reviewer confirmation."
+        elif age_hours >= 72.0:
+            reason = "Pending review has aged beyond 72 hours."
+        else:
+            reason = "Pending mapping is waiting for routine reviewer confirmation."
+        return {
+            "tier": tier,
+            "score": round(score, 4),
+            "reason": reason,
+            "age_hours": round(age_hours, 2),
+            "citation_count": citation_count,
+        }
 
     @classmethod
     def _to_review_item(
@@ -2713,12 +2912,22 @@ class SqlAlchemyAuditFlowRepository:
         *,
         viewer_user_id: str | None = None,
         now: datetime | None = None,
+        priority_profile: dict[str, object] | None = None,
         tool_access_summary: ToolAccessSummary | None = None,
     ) -> ReviewQueueItem:
         claim_now = now or cls._utcnow_naive()
+        assignment_status = cls._assignment_status(
+            row,
+            viewer_user_id=viewer_user_id,
+        )
         claim_status = cls._claim_status(
             row,
             viewer_user_id=viewer_user_id,
+            now=claim_now,
+        )
+        normalized_priority_profile = priority_profile or cls._build_review_priority_profile(
+            row,
+            highest_gap_severity=None,
             now=claim_now,
         )
         return ReviewQueueItem(
@@ -2729,7 +2938,24 @@ class SqlAlchemyAuditFlowRepository:
             snapshot_version=row.snapshot_version,
             evidence_item_id=row.evidence_item_id,
             rationale_summary=row.rationale_summary,
+            ranking_score=round(
+                float(normalized_priority_profile.get("citation_count") or len(row.citation_refs or []))
+                + (0.25 if row.mapping_status == "reassigned" else 0.0),
+                4,
+            ),
             citation_refs=row.citation_refs,
+            assigned_reviewer_id=(
+                row.reviewer_assigned_user_id
+                if assignment_status != "unassigned"
+                else None
+            ),
+            assigned_at=row.reviewer_assigned_at if assignment_status != "unassigned" else None,
+            assignment_note=(
+                row.reviewer_assignment_note
+                if assignment_status != "unassigned"
+                else None
+            ),
+            assignment_status=assignment_status,
             claimed_by_user_id=(
                 row.reviewer_claimed_by_user_id
                 if claim_status != "unclaimed"
@@ -2742,8 +2968,83 @@ class SqlAlchemyAuditFlowRepository:
                 else None
             ),
             claim_status=claim_status,
+            priority_tier=str(normalized_priority_profile.get("tier") or "medium"),
+            priority_score=float(normalized_priority_profile.get("score") or 0.0),
+            priority_reason=str(normalized_priority_profile.get("reason") or ""),
             updated_at=row.updated_at,
             tool_access_summary=(tool_access_summary or ToolAccessSummary()),
+        )
+
+    @classmethod
+    def _to_claim_response(
+        cls,
+        row: MappingRow,
+        *,
+        viewer_user_id: str,
+        now: datetime,
+    ) -> MappingClaimResponse:
+        assignment_status = cls._assignment_status(
+            row,
+            viewer_user_id=viewer_user_id,
+        )
+        claim_status = cls._claim_status(
+            row,
+            viewer_user_id=viewer_user_id,
+            now=now,
+        )
+        return MappingClaimResponse(
+            mapping_id=row.mapping_id,
+            mapping_status=row.mapping_status,
+            assigned_reviewer_id=(
+                row.reviewer_assigned_user_id
+                if assignment_status != "unassigned"
+                else None
+            ),
+            assigned_at=row.reviewer_assigned_at if assignment_status != "unassigned" else None,
+            assignment_note=(
+                row.reviewer_assignment_note
+                if assignment_status != "unassigned"
+                else None
+            ),
+            assignment_status=assignment_status,
+            claimed_by_user_id=(
+                row.reviewer_claimed_by_user_id
+                if claim_status != "unclaimed"
+                else None
+            ),
+            claimed_at=row.reviewer_claimed_at if claim_status != "unclaimed" else None,
+            claim_expires_at=(
+                row.reviewer_claim_expires_at
+                if claim_status != "unclaimed"
+                else None
+            ),
+            claim_status=claim_status,
+        )
+
+    @classmethod
+    def _to_assignment_response(
+        cls,
+        row: MappingRow,
+        *,
+        viewer_user_id: str,
+        now: datetime,
+    ) -> MappingAssignmentResponse:
+        claim_response = cls._to_claim_response(
+            row,
+            viewer_user_id=viewer_user_id,
+            now=now,
+        )
+        return MappingAssignmentResponse(
+            mapping_id=claim_response.mapping_id,
+            mapping_status=claim_response.mapping_status,
+            assigned_reviewer_id=claim_response.assigned_reviewer_id,
+            assigned_at=claim_response.assigned_at,
+            assignment_note=claim_response.assignment_note,
+            assignment_status=claim_response.assignment_status,
+            claimed_by_user_id=claim_response.claimed_by_user_id,
+            claimed_at=claim_response.claimed_at,
+            claim_expires_at=claim_response.claim_expires_at,
+            claim_status=claim_response.claim_status,
         )
 
     @staticmethod
@@ -3935,6 +4236,8 @@ class SqlAlchemyAuditFlowRepository:
         control_state_id: str | None = None,
         severity: str | None = None,
         claim_state: str | None = None,
+        assignment_state: str | None = None,
+        priority: str | None = None,
         sort: str = "recent",
         organization_id: str | None = None,
         viewer_user_id: str | None = None,
@@ -3946,6 +4249,8 @@ class SqlAlchemyAuditFlowRepository:
                 organization_id=organization_id,
             )
             claim_state_filter = (claim_state or "").strip().lower() or None
+            assignment_state_filter = (assignment_state or "").strip().lower() or None
+            priority_filter = (priority or "").strip().lower() or None
             stmt = (
                 select(MappingRow)
                 .where(MappingRow.cycle_id == cycle_row.cycle_id)
@@ -3974,6 +4279,51 @@ class SqlAlchemyAuditFlowRepository:
                     )
                     == claim_state_filter
                 ]
+            if assignment_state_filter is not None:
+                if assignment_state_filter not in {"unassigned", "assigned_to_me", "assigned_to_other"}:
+                    raise ValueError("INVALID_REVIEW_QUEUE_ASSIGNMENT_STATE")
+                mapping_rows = [
+                    row
+                    for row in mapping_rows
+                    if self._assignment_status(
+                        row,
+                        viewer_user_id=viewer_user_id,
+                    )
+                    == assignment_state_filter
+                ]
+            control_ids = sorted({row.control_state_id for row in mapping_rows})
+            control_rows_by_id = {
+                row.control_state_id: row
+                for row in session.scalars(
+                    select(ControlCoverageRow).where(ControlCoverageRow.control_state_id.in_(control_ids))
+                ).all()
+            } if control_ids else {}
+            open_gap_rows = session.scalars(
+                select(GapRow)
+                .where(GapRow.control_state_id.in_(control_ids) if control_ids else text("1=0"))
+                .where(GapRow.status != "resolved")
+            ).all() if control_ids else []
+            highest_gap_severity_by_control: dict[str, str] = {}
+            for gap_row in open_gap_rows:
+                current = highest_gap_severity_by_control.get(gap_row.control_state_id)
+                if self._gap_severity_rank(gap_row.severity) > self._gap_severity_rank(current):
+                    highest_gap_severity_by_control[gap_row.control_state_id] = gap_row.severity
+            priority_profiles = {
+                row.mapping_id: self._build_review_priority_profile(
+                    row,
+                    highest_gap_severity=highest_gap_severity_by_control.get(row.control_state_id),
+                    now=now,
+                )
+                for row in mapping_rows
+            }
+            if priority_filter is not None:
+                if priority_filter not in {"urgent", "high", "medium", "low"}:
+                    raise ValueError("INVALID_REVIEW_QUEUE_PRIORITY")
+                mapping_rows = [
+                    row
+                    for row in mapping_rows
+                    if str(priority_profiles[row.mapping_id]["tier"]) == priority_filter
+                ]
             if sort == "recent":
                 mapping_rows.sort(key=lambda row: row.updated_at, reverse=True)
             elif sort == "ranking":
@@ -3998,11 +4348,33 @@ class SqlAlchemyAuditFlowRepository:
                         -int(row.updated_at.timestamp()),
                     )
                 )
+            elif sort == "priority":
+                assignment_order = {"assigned_to_me": 0, "unassigned": 1, "assigned_to_other": 2}
+                claim_order = {"claimed_by_me": 0, "unclaimed": 1, "claimed_by_other": 2}
+                mapping_rows.sort(
+                    key=lambda row: (
+                        -float(priority_profiles[row.mapping_id]["score"]),
+                        assignment_order[
+                            self._assignment_status(
+                                row,
+                                viewer_user_id=viewer_user_id,
+                            )
+                        ],
+                        claim_order[
+                            self._claim_status(
+                                row,
+                                viewer_user_id=viewer_user_id,
+                                now=now,
+                            )
+                        ],
+                        -int(row.updated_at.timestamp()),
+                    )
+                )
             else:
                 raise ValueError("INVALID_REVIEW_QUEUE_SORT")
             items: list[ReviewQueueItem] = []
             for mapping_row in mapping_rows:
-                control_row = session.get(ControlCoverageRow, mapping_row.control_state_id)
+                control_row = control_rows_by_id.get(mapping_row.control_state_id)
                 mapping_tool_access_rows = self._list_mapping_tool_access_rows(
                     session,
                     organization_id=cycle_row.organization_id,
@@ -4014,6 +4386,7 @@ class SqlAlchemyAuditFlowRepository:
                         control_row,
                         viewer_user_id=viewer_user_id,
                         now=now,
+                        priority_profile=priority_profiles[mapping_row.mapping_id],
                         tool_access_summary=self._to_tool_access_summary(mapping_tool_access_rows),
                     )
                 )
@@ -4572,6 +4945,8 @@ class SqlAlchemyAuditFlowRepository:
             )
             if active_claim_status == "claimed_by_other":
                 raise ValueError("REVIEW_CLAIM_CONFLICT")
+            if self._assignment_status(mapping_row, viewer_user_id=reviewer_id) == "assigned_to_other":
+                raise ValueError("REVIEW_ASSIGNMENT_CONFLICT")
             previous_status = mapping_row.mapping_status
             original_control_id = mapping_row.control_state_id
             original_control_code = mapping_row.control_code
@@ -4590,6 +4965,7 @@ class SqlAlchemyAuditFlowRepository:
                 mapping_row.mapping_status = "rejected"
             mapping_row.reviewer_locked = True
             self._clear_mapping_claim(mapping_row)
+            self._clear_mapping_assignment(mapping_row)
             mapping_row.updated_at = review_time
             cycle_row.last_reviewed_at = review_time
             cycle_row.updated_at = review_time
@@ -4682,19 +5058,66 @@ class SqlAlchemyAuditFlowRepository:
             )
             if claim_status == "claimed_by_other":
                 raise ValueError("REVIEW_CLAIM_CONFLICT")
+            if self._assignment_status(mapping_row, viewer_user_id=reviewer_id) == "assigned_to_other":
+                raise ValueError("REVIEW_ASSIGNMENT_CONFLICT")
             mapping_row.reviewer_claimed_by_user_id = reviewer_id
             mapping_row.reviewer_claimed_at = now
             mapping_row.reviewer_claim_expires_at = now.replace(
                 microsecond=0
             ) + timedelta(seconds=self._normalize_claim_lease_seconds(command.lease_seconds))
             mapping_row.updated_at = now
-            return MappingClaimResponse(
-                mapping_id=mapping_row.mapping_id,
-                mapping_status=mapping_row.mapping_status,
-                claimed_by_user_id=mapping_row.reviewer_claimed_by_user_id,
-                claimed_at=mapping_row.reviewer_claimed_at,
-                claim_expires_at=mapping_row.reviewer_claim_expires_at,
-                claim_status="claimed_by_me",
+            return self._to_claim_response(
+                mapping_row,
+                viewer_user_id=reviewer_id,
+                now=now,
+            )
+
+    def assign_mapping(
+        self,
+        mapping_id: str,
+        command: MappingAssignCommand,
+        *,
+        organization_id: str | None = None,
+        reviewer_id: str,
+        reviewer_role: str | None = None,
+    ) -> MappingAssignmentResponse:
+        with self.session_factory.begin() as session:
+            if str(reviewer_role or "").strip().lower() != "product_admin":
+                raise ValueError("REVIEW_ASSIGNMENT_FORBIDDEN")
+            mapping_row, _cycle_row, _workspace_row = self._get_mapping_scope(
+                session,
+                mapping_id=mapping_id,
+                organization_id=organization_id,
+            )
+            if command.expected_updated_at is not None and not self._timestamps_match(
+                mapping_row.updated_at,
+                command.expected_updated_at,
+            ):
+                raise ValueError("CONFLICT_STALE_RESOURCE")
+            if mapping_row.reviewer_locked and mapping_row.mapping_status in {"accepted", "rejected"}:
+                raise ValueError("MAPPING_ALREADY_TERMINAL")
+            now = self._utcnow_naive()
+            claim_status = self._claim_status(
+                mapping_row,
+                viewer_user_id=reviewer_id,
+                now=now,
+            )
+            active_claimer = (
+                mapping_row.reviewer_claimed_by_user_id
+                if claim_status != "unclaimed"
+                else None
+            )
+            if active_claimer is not None and active_claimer != command.reviewer_user_id:
+                raise ValueError("REVIEW_CLAIM_CONFLICT")
+            mapping_row.reviewer_assigned_user_id = command.reviewer_user_id
+            mapping_row.reviewer_assigned_at = now
+            mapping_row.reviewer_assignment_updated_by_user_id = reviewer_id
+            mapping_row.reviewer_assignment_note = command.note or None
+            mapping_row.updated_at = now
+            return self._to_assignment_response(
+                mapping_row,
+                viewer_user_id=reviewer_id,
+                now=now,
             )
 
     def release_mapping_claim(
@@ -4726,13 +5149,54 @@ class SqlAlchemyAuditFlowRepository:
                 raise ValueError("REVIEW_CLAIM_CONFLICT")
             self._clear_mapping_claim(mapping_row)
             mapping_row.updated_at = now
-            return MappingClaimResponse(
-                mapping_id=mapping_row.mapping_id,
-                mapping_status=mapping_row.mapping_status,
-                claimed_by_user_id=None,
-                claimed_at=None,
-                claim_expires_at=None,
-                claim_status="unclaimed",
+            return self._to_claim_response(
+                mapping_row,
+                viewer_user_id=reviewer_id,
+                now=now,
+            )
+
+    def release_mapping_assignment(
+        self,
+        mapping_id: str,
+        command: MappingAssignReleaseCommand,
+        *,
+        organization_id: str | None = None,
+        reviewer_id: str,
+        reviewer_role: str | None = None,
+    ) -> MappingAssignmentResponse:
+        with self.session_factory.begin() as session:
+            mapping_row, _cycle_row, _workspace_row = self._get_mapping_scope(
+                session,
+                mapping_id=mapping_id,
+                organization_id=organization_id,
+            )
+            if command.expected_updated_at is not None and not self._timestamps_match(
+                mapping_row.updated_at,
+                command.expected_updated_at,
+            ):
+                raise ValueError("CONFLICT_STALE_RESOURCE")
+            now = self._utcnow_naive()
+            claim_status = self._claim_status(
+                mapping_row,
+                viewer_user_id=reviewer_id,
+                now=now,
+            )
+            if claim_status == "claimed_by_other":
+                raise ValueError("REVIEW_CLAIM_CONFLICT")
+            actor_role = str(reviewer_role or "").strip().lower()
+            assigned_user_id = self._assigned_user_id(mapping_row)
+            if (
+                actor_role != "product_admin"
+                and assigned_user_id is not None
+                and assigned_user_id != reviewer_id
+            ):
+                raise ValueError("REVIEW_ASSIGNMENT_FORBIDDEN")
+            self._clear_mapping_assignment(mapping_row)
+            mapping_row.updated_at = now
+            return self._to_assignment_response(
+                mapping_row,
+                viewer_user_id=reviewer_id,
+                now=now,
             )
 
     def decide_gap(

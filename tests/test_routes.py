@@ -427,6 +427,33 @@ class AuditFlowRouteAuthorizationTests(unittest.TestCase):
         self.assertEqual(response.json()["data"]["mapping_id"], "mapping-1")
         self.assertEqual(response.json()["data"]["claimed_by_user_id"], "user-1")
 
+    def test_product_admin_route_allows_mapping_assignment(self) -> None:
+        response = self.client.post(
+            "/api/v1/auditflow/mappings/mapping-1/assign",
+            headers={
+                **_auth_headers(role="org_admin"),
+                "Idempotency-Key": "assign-1",
+            },
+            json={"reviewer_user_id": "user-2", "note": "Route to the access-review owner."},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["mapping_id"], "mapping-1")
+        self.assertEqual(response.json()["data"]["assigned_reviewer_id"], "user-2")
+
+    def test_reviewer_route_rejects_mapping_assignment_without_admin_access(self) -> None:
+        response = self.client.post(
+            "/api/v1/auditflow/mappings/mapping-1/assign",
+            headers={
+                **_auth_headers(role="reviewer"),
+                "Idempotency-Key": "assign-2",
+            },
+            json={"reviewer_user_id": "user-2", "note": "Route to the access-review owner."},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "AUTH_FORBIDDEN")
+
     def test_reviewer_route_lists_tool_access_audit(self) -> None:
         response = self.client.get(
             "/api/v1/auditflow/tool-access-audit",
@@ -743,10 +770,17 @@ def _stub_service():
                 evidence_item_id="evidence-1",
                 rationale_summary="Candidate mapping awaiting reviewer confirmation.",
                 citation_refs=[],
+                assigned_reviewer_id=None,
+                assigned_at=None,
+                assignment_note=None,
+                assignment_status="unassigned",
                 claimed_by_user_id=None,
                 claimed_at=None,
                 claim_expires_at=None,
                 claim_status="unclaimed",
+                priority_tier="medium",
+                priority_score=48.0,
+                priority_reason="Pending mapping is waiting for routine reviewer confirmation.",
                 updated_at=created_at,
                 tool_access_summary=ToolAccessSummary(
                     total_count=2,
@@ -812,7 +846,7 @@ def _stub_service():
         search_evidence=lambda cycle_id, query, limit=5, organization_id=None: search_response.model_copy(update={"query": query}),
         list_memory_records=lambda cycle_id, **filters: memory_response,
         list_gaps=lambda cycle_id, status=None, severity=None, organization_id=None: [],
-        list_review_queue=lambda cycle_id, control_state_id=None, severity=None, claim_state=None, sort="recent", organization_id=None, viewer_user_id=None: review_queue,
+        list_review_queue=lambda cycle_id, control_state_id=None, severity=None, claim_state=None, assignment_state=None, priority=None, sort="recent", organization_id=None, viewer_user_id=None: review_queue,
         list_review_decisions=lambda cycle_id, mapping_id=None, gap_id=None, organization_id=None: SimpleNamespace(items=[]),
         list_tool_access_audit=lambda workflow_run_id=None, user_id=None, tool_name=None, subject_type=None, subject_id=None, execution_status=None, organization_id=None: tool_access_response,
         list_cycle_tool_access_audit=lambda cycle_id, workflow_run_id=None, user_id=None, tool_name=None, execution_status=None, organization_id=None: cycle_tool_access_response,
@@ -831,16 +865,54 @@ def _stub_service():
             model_dump=lambda **kwargs: {
                 "mapping_id": mapping_id,
                 "mapping_status": "proposed",
+                "assigned_reviewer_id": None,
+                "assigned_at": None,
+                "assignment_note": None,
+                "assignment_status": "unassigned",
                 "claimed_by_user_id": reviewer_id,
                 "claimed_at": created_at,
                 "claim_expires_at": created_at,
                 "claim_status": "claimed_by_me",
             }
         ),
+        assign_mapping=lambda mapping_id, command, idempotency_key=None, organization_id=None, reviewer_id=None, reviewer_role=None: SimpleNamespace(
+            model_dump=lambda **kwargs: {
+                "mapping_id": mapping_id,
+                "mapping_status": "proposed",
+                "assigned_reviewer_id": command.reviewer_user_id,
+                "assigned_at": created_at,
+                "assignment_note": command.note,
+                "assignment_status": (
+                    "assigned_to_me" if command.reviewer_user_id == reviewer_id else "assigned_to_other"
+                ),
+                "claimed_by_user_id": None,
+                "claimed_at": None,
+                "claim_expires_at": None,
+                "claim_status": "unclaimed",
+            }
+        ),
         release_mapping_claim=lambda mapping_id, command=None, idempotency_key=None, organization_id=None, reviewer_id=None: SimpleNamespace(
             model_dump=lambda **kwargs: {
                 "mapping_id": mapping_id,
                 "mapping_status": "proposed",
+                "assigned_reviewer_id": None,
+                "assigned_at": None,
+                "assignment_note": None,
+                "assignment_status": "unassigned",
+                "claimed_by_user_id": None,
+                "claimed_at": None,
+                "claim_expires_at": None,
+                "claim_status": "unclaimed",
+            }
+        ),
+        release_mapping_assignment=lambda mapping_id, command=None, idempotency_key=None, organization_id=None, reviewer_id=None, reviewer_role=None: SimpleNamespace(
+            model_dump=lambda **kwargs: {
+                "mapping_id": mapping_id,
+                "mapping_status": "proposed",
+                "assigned_reviewer_id": None,
+                "assigned_at": None,
+                "assignment_note": None,
+                "assignment_status": "unassigned",
                 "claimed_by_user_id": None,
                 "claimed_at": None,
                 "claim_expires_at": None,

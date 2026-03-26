@@ -23,7 +23,13 @@ from .api_models import (
     ImportAcceptedResponse,
     ImportDispatchResponse,
     ImportListResponse,
+    MappingAssignCommand,
+    MappingAssignmentResponse,
+    MappingAssignReleaseCommand,
     MappingListResponse,
+    MappingClaimCommand,
+    MappingClaimReleaseCommand,
+    MappingClaimResponse,
     MappingReviewCommand,
     MappingReviewResponse,
     MappingSummary,
@@ -69,6 +75,7 @@ from .repository import (
     create_auditflow_tables,
 )
 from .service import AuditFlowAppService
+from .vector_benchmark import run_vector_search_benchmark, run_vector_search_mode_comparison
 from .worker import AuditFlowImportWorker
 from .sample_payloads import (
     cycle_create_command,
@@ -114,6 +121,12 @@ __all__ = [
     "ImportAcceptedResponse",
     "ImportDispatchResponse",
     "ImportListResponse",
+    "MappingAssignCommand",
+    "MappingAssignmentResponse",
+    "MappingAssignReleaseCommand",
+    "MappingClaimCommand",
+    "MappingClaimReleaseCommand",
+    "MappingClaimResponse",
     "MappingListResponse",
     "MappingReviewCommand",
     "MappingReviewResponse",
@@ -162,6 +175,8 @@ __all__ = [
     "load_replay_baseline",
     "load_replay_report",
     "mapping_review_command",
+    "run_vector_search_benchmark",
+    "run_vector_search_mode_comparison",
     "upload_import_command",
     "workspace_create_command",
 ]

@@ -35,6 +35,9 @@ from .api_models import (
     ImportAcceptedResponse,
     ImportDispatchResponse,
     ImportListResponse,
+    MappingAssignCommand,
+    MappingAssignmentResponse,
+    MappingAssignReleaseCommand,
     MappingClaimCommand,
     MappingClaimReleaseCommand,
     MappingClaimResponse,
@@ -559,6 +562,8 @@ class AuditFlowAppService:
         control_state_id: str | None = None,
         severity: str | None = None,
         claim_state: str | None = None,
+        assignment_state: str | None = None,
+        priority: str | None = None,
         sort: str = "recent",
         organization_id: str | None = None,
         viewer_user_id: str | None = None,
@@ -568,6 +573,8 @@ class AuditFlowAppService:
             control_state_id=control_state_id,
             severity=severity,
             claim_state=claim_state,
+            assignment_state=assignment_state,
+            priority=priority,
             sort=sort,
             organization_id=organization_id,
             viewer_user_id=viewer_user_id,
@@ -943,6 +950,59 @@ class AuditFlowAppService:
         )
         return response
 
+    def assign_mapping(
+        self,
+        mapping_id: str,
+        command: MappingAssignCommand | dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        organization_id: str | None = None,
+        reviewer_id: str,
+        reviewer_role: str | None = None,
+    ) -> MappingAssignmentResponse:
+        if isinstance(command, dict):
+            command = MappingAssignCommand.model_validate(command)
+        request_payload = {"mapping_id": mapping_id, **command.model_dump(mode="json")}
+        cached = self._load_idempotent_response(
+            operation="auditflow.assign_mapping",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            model_type=MappingAssignmentResponse,
+        )
+        if cached is not None:
+            return cached
+        response = self.repository.assign_mapping(
+            mapping_id,
+            command,
+            organization_id=organization_id,
+            reviewer_id=reviewer_id,
+            reviewer_role=reviewer_role,
+        )
+        context = self.repository.get_mapping_event_context(mapping_id, organization_id=organization_id)
+        self._emit_product_event(
+            event_name="auditflow.review.assigned",
+            workflow_run_id=f"auditflow-assign-{mapping_id}-{uuid4().hex[:8]}",
+            aggregate_type="evidence_mapping",
+            aggregate_id=mapping_id,
+            node_name="mapping_review_assigned",
+            payload={
+                "cycle_id": context["cycle_id"],
+                "workspace_id": context["workspace_id"],
+                "mapping_id": mapping_id,
+                "control_state_id": context["control_state_id"],
+                "reviewer_id": reviewer_id,
+                "assigned_reviewer_id": response.assigned_reviewer_id,
+                "organization_id": context["organization_id"],
+            },
+        )
+        self._store_idempotent_response(
+            operation="auditflow.assign_mapping",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            response_payload=response.model_dump(mode="json"),
+        )
+        return response
+
     def release_mapping_claim(
         self,
         mapping_id: str,
@@ -989,6 +1049,60 @@ class AuditFlowAppService:
         )
         self._store_idempotent_response(
             operation="auditflow.release_mapping_claim",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            response_payload=response.model_dump(mode="json"),
+        )
+        return response
+
+    def release_mapping_assignment(
+        self,
+        mapping_id: str,
+        command: MappingAssignReleaseCommand | dict[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
+        organization_id: str | None = None,
+        reviewer_id: str,
+        reviewer_role: str | None = None,
+    ) -> MappingAssignmentResponse:
+        if command is None:
+            command = MappingAssignReleaseCommand()
+        elif isinstance(command, dict):
+            command = MappingAssignReleaseCommand.model_validate(command)
+        request_payload = {"mapping_id": mapping_id, **command.model_dump(mode="json")}
+        cached = self._load_idempotent_response(
+            operation="auditflow.release_mapping_assignment",
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+            model_type=MappingAssignmentResponse,
+        )
+        if cached is not None:
+            return cached
+        response = self.repository.release_mapping_assignment(
+            mapping_id,
+            command,
+            organization_id=organization_id,
+            reviewer_id=reviewer_id,
+            reviewer_role=reviewer_role,
+        )
+        context = self.repository.get_mapping_event_context(mapping_id, organization_id=organization_id)
+        self._emit_product_event(
+            event_name="auditflow.review.assignment_released",
+            workflow_run_id=f"auditflow-assign-release-{mapping_id}-{uuid4().hex[:8]}",
+            aggregate_type="evidence_mapping",
+            aggregate_id=mapping_id,
+            node_name="mapping_review_assignment_released",
+            payload={
+                "cycle_id": context["cycle_id"],
+                "workspace_id": context["workspace_id"],
+                "mapping_id": mapping_id,
+                "control_state_id": context["control_state_id"],
+                "reviewer_id": reviewer_id,
+                "organization_id": context["organization_id"],
+            },
+        )
+        self._store_idempotent_response(
+            operation="auditflow.release_mapping_assignment",
             idempotency_key=idempotency_key,
             request_payload=request_payload,
             response_payload=response.model_dump(mode="json"),

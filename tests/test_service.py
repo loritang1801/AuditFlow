@@ -478,6 +478,165 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.assertEqual(others.total_count, 1)
         self.assertEqual(others.items[0].claim_status, "claimed_by_other")
 
+    def test_review_queue_assignments_support_handoff_and_filters(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        assigned = service.assign_mapping(
+            "mapping-1",
+            {"reviewer_user_id": "user-reviewer-1", "note": "Access review owner should handle this."},
+            reviewer_id="user-reviewer-3",
+            reviewer_role="product_admin",
+            organization_id="org-1",
+        )
+        mine = service.list_review_queue(
+            "cycle-1",
+            assignment_state="assigned_to_me",
+            organization_id="org-1",
+            viewer_user_id="user-reviewer-1",
+        )
+        others = service.list_review_queue(
+            "cycle-1",
+            assignment_state="assigned_to_other",
+            organization_id="org-1",
+            viewer_user_id="user-reviewer-2",
+        )
+
+        self.assertEqual(assigned.assignment_status, "assigned_to_other")
+        self.assertEqual(assigned.assigned_reviewer_id, "user-reviewer-1")
+        self.assertEqual(mine.total_count, 1)
+        self.assertEqual(mine.items[0].assignment_status, "assigned_to_me")
+        self.assertEqual(others.total_count, 1)
+        self.assertEqual(others.items[0].assignment_status, "assigned_to_other")
+
+        with self.assertRaisesRegex(ValueError, "REVIEW_ASSIGNMENT_CONFLICT"):
+            service.claim_mapping(
+                "mapping-1",
+                {"lease_seconds": 600},
+                reviewer_id="user-reviewer-2",
+                organization_id="org-1",
+            )
+
+        reassigned = service.assign_mapping(
+            "mapping-1",
+            {"reviewer_user_id": "user-reviewer-2", "note": "Handing off to backup reviewer."},
+            reviewer_id="user-reviewer-3",
+            reviewer_role="product_admin",
+            organization_id="org-1",
+        )
+        reviewed = service.review_mapping(
+            "mapping-1",
+            mapping_review_command(),
+            reviewer_id="user-reviewer-2",
+            organization_id="org-1",
+        )
+
+        self.assertEqual(reassigned.assigned_reviewer_id, "user-reviewer-2")
+        self.assertEqual(reviewed.mapping_status, "accepted")
+
+    def test_assignment_requires_admin_and_release_requires_admin_or_assignee(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with self.assertRaisesRegex(ValueError, "REVIEW_ASSIGNMENT_FORBIDDEN"):
+            service.assign_mapping(
+                "mapping-1",
+                {"reviewer_user_id": "user-reviewer-1", "note": "Unauthorized assignment attempt."},
+                reviewer_id="user-reviewer-2",
+                reviewer_role="reviewer",
+                organization_id="org-1",
+            )
+
+        service.assign_mapping(
+            "mapping-1",
+            {"reviewer_user_id": "user-reviewer-1", "note": "Admin assignment."},
+            reviewer_id="user-admin-1",
+            reviewer_role="product_admin",
+            organization_id="org-1",
+        )
+
+        with self.assertRaisesRegex(ValueError, "REVIEW_ASSIGNMENT_FORBIDDEN"):
+            service.release_mapping_assignment(
+                "mapping-1",
+                {},
+                reviewer_id="user-reviewer-2",
+                reviewer_role="reviewer",
+                organization_id="org-1",
+            )
+
+        released_by_assignee = service.release_mapping_assignment(
+            "mapping-1",
+            {},
+            reviewer_id="user-reviewer-1",
+            reviewer_role="reviewer",
+            organization_id="org-1",
+        )
+        self.assertEqual(released_by_assignee.assignment_status, "unassigned")
+
+        service.assign_mapping(
+            "mapping-1",
+            {"reviewer_user_id": "user-reviewer-2", "note": "Admin re-assignment."},
+            reviewer_id="user-admin-1",
+            reviewer_role="product_admin",
+            organization_id="org-1",
+        )
+        released_by_admin = service.release_mapping_assignment(
+            "mapping-1",
+            {},
+            reviewer_id="user-admin-1",
+            reviewer_role="product_admin",
+            organization_id="org-1",
+        )
+        self.assertEqual(released_by_admin.assignment_status, "unassigned")
+
+    def test_review_queue_priority_sort_and_filters(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+        now = service.repository._utcnow_naive()
+
+        with service.repository.session_factory.begin() as session:
+            session.add(
+                MappingRow(
+                    mapping_id="mapping-priority-low",
+                    cycle_id="cycle-1",
+                    control_state_id="control-state-2",
+                    control_code="CC6.2",
+                    mapping_status="proposed",
+                    evidence_item_id="evidence-1",
+                    rationale_summary="Routine joiner ticket evidence.",
+                    citation_refs=[{"kind": "evidence_chunk", "id": "chunk-1"}],
+                    reviewer_locked=False,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                MappingRow(
+                    mapping_id="mapping-priority-high",
+                    cycle_id="cycle-1",
+                    control_state_id="control-state-3",
+                    control_code="CC7.2",
+                    mapping_status="reassigned",
+                    evidence_item_id="evidence-1",
+                    rationale_summary="Monitoring evidence was reassigned after reviewer feedback.",
+                    citation_refs=[{"kind": "evidence_chunk", "id": "chunk-1"}],
+                    reviewer_locked=False,
+                    updated_at=now,
+                )
+            )
+
+        priority_sorted = service.list_review_queue("cycle-1", sort="priority")
+        urgent_only = service.list_review_queue("cycle-1", priority="urgent")
+        high_only = service.list_review_queue("cycle-1", priority="high")
+
+        self.assertEqual(priority_sorted.items[0].mapping_id, "mapping-1")
+        self.assertEqual(priority_sorted.items[0].priority_tier, "high")
+        self.assertEqual(priority_sorted.items[1].mapping_id, "mapping-priority-high")
+        self.assertEqual(priority_sorted.items[1].priority_tier, "high")
+        self.assertEqual(priority_sorted.items[-1].mapping_id, "mapping-priority-low")
+        self.assertEqual(priority_sorted.items[-1].priority_tier, "low")
+        self.assertEqual(urgent_only.total_count, 0)
+        self.assertEqual({item.mapping_id for item in high_only.items}, {"mapping-1", "mapping-priority-high"})
+
     def test_claimed_mapping_rejects_other_reviewer_actions_until_release(self) -> None:
         service = build_app_service()
         self.addCleanup(service.close)
@@ -518,7 +677,7 @@ class AuditFlowServiceTests(unittest.TestCase):
         self.addCleanup(service.close)
 
         with self.assertRaisesRegex(ValueError, "INVALID_REVIEW_QUEUE_SORT"):
-            service.list_review_queue("cycle-1", sort="priority")
+            service.list_review_queue("cycle-1", sort="oldest")
 
     def test_list_review_queue_rejects_unknown_claim_state(self) -> None:
         service = build_app_service()
@@ -526,6 +685,20 @@ class AuditFlowServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "INVALID_REVIEW_QUEUE_CLAIM_STATE"):
             service.list_review_queue("cycle-1", claim_state="mine")
+
+    def test_list_review_queue_rejects_unknown_assignment_state(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with self.assertRaisesRegex(ValueError, "INVALID_REVIEW_QUEUE_ASSIGNMENT_STATE"):
+            service.list_review_queue("cycle-1", assignment_state="team")
+
+    def test_list_review_queue_rejects_unknown_priority_filter(self) -> None:
+        service = build_app_service()
+        self.addCleanup(service.close)
+
+        with self.assertRaisesRegex(ValueError, "INVALID_REVIEW_QUEUE_PRIORITY"):
+            service.list_review_queue("cycle-1", priority="p0")
 
     def test_gap_transitions_enforce_stricter_terminal_policy(self) -> None:
         service = build_app_service()

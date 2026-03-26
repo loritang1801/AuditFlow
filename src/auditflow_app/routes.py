@@ -23,12 +23,16 @@ ERROR_STATUS_BY_CODE = {
     "CONFLICT_STALE_RESOURCE": 409,
     "MAPPING_ALREADY_TERMINAL": 409,
     "REVIEW_CLAIM_CONFLICT": 409,
+    "REVIEW_ASSIGNMENT_CONFLICT": 409,
+    "REVIEW_ASSIGNMENT_FORBIDDEN": 403,
     "GAP_STATUS_CONFLICT": 409,
     "EXPORT_ALREADY_RUNNING": 409,
     "SNAPSHOT_STALE": 409,
     "CYCLE_NOT_READY_FOR_EXPORT": 422,
     "INVALID_REVIEW_QUEUE_SORT": 400,
     "INVALID_REVIEW_QUEUE_CLAIM_STATE": 400,
+    "INVALID_REVIEW_QUEUE_ASSIGNMENT_STATE": 400,
+    "INVALID_REVIEW_QUEUE_PRIORITY": 400,
     "INVALID_CURSOR": 400,
     "INVALID_ARTIFACT_BYTES": 400,
     "INVALID_SEARCH_QUERY": 400,
@@ -52,6 +56,8 @@ from .api_models import (
     ImportAcceptedResponse,
     ImportDispatchResponse,
     ImportListResponse,
+    MappingAssignCommand,
+    MappingAssignReleaseCommand,
     MappingClaimCommand,
     MappingClaimReleaseCommand,
     MappingClaimResponse,
@@ -107,9 +113,11 @@ def map_domain_error(exc: Exception, *, path: str = "") -> tuple[int, dict[str, 
 
 def _serialize_data(value: Any) -> Any:
     if hasattr(value, "model_dump"):
-        return value.model_dump(by_alias=True)
+        return value.model_dump(by_alias=True, mode="json")
     if isinstance(value, list):
         return [_serialize_data(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _serialize_data(item) for key, item in value.items()}
     return value
 
 
@@ -334,13 +342,13 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         @app.post("/api/v1/auth/session")
         def create_auth_session(
             command: SessionCreateCommand,
-            request: Request,
+            user_agent: str | None = Header(default=None, alias="User-Agent"),
             request_id: str | None = Header(default=None, alias="X-Request-Id"),
         ):
             issue = auth_service.create_session(
                 command,
-                ip_address=(request.client.host if request.client is not None else None),
-                user_agent=request.headers.get("User-Agent"),
+                ip_address=None,
+                user_agent=user_agent,
             )
             response = JSONResponse(
                 status_code=200,
@@ -361,14 +369,14 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
 
         @app.post("/api/v1/auth/session/refresh")
         def refresh_auth_session(
-            request: Request,
             refresh_token: str | None = Cookie(default=None, alias="refresh_token"),
+            user_agent: str | None = Header(default=None, alias="User-Agent"),
             request_id: str | None = Header(default=None, alias="X-Request-Id"),
         ):
             issue = auth_service.refresh_session(
                 refresh_token,
-                ip_address=(request.client.host if request.client is not None else None),
-                user_agent=request.headers.get("User-Agent"),
+                ip_address=None,
+                user_agent=user_agent,
             )
             response = JSONResponse(
                 status_code=200,
@@ -387,7 +395,7 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
             )
             return response
 
-        @app.delete("/api/v1/auth/session/current", status_code=204)
+        @app.delete("/api/v1/auth/session/current", response_class=Response)
         def revoke_current_auth_session(
             auth_context=Depends(require_viewer_access),
         ):
@@ -798,6 +806,8 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         control_state_id: str | None = None,
         severity: str | None = None,
         claim_state: str | None = None,
+        assignment_state: str | None = None,
+        priority: str | None = None,
         sort: str = "recent",
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
@@ -809,6 +819,8 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
             control_state_id=control_state_id,
             severity=severity,
             claim_state=claim_state,
+            assignment_state=assignment_state,
+            priority=priority,
             sort=sort,
             organization_id=auth_context.organization_id,
             viewer_user_id=auth_context.user_id,
@@ -949,6 +961,8 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         control_state_id: str | None = None,
         severity: str | None = None,
         claim_state: str | None = None,
+        assignment_state: str | None = None,
+        priority: str | None = None,
         sort: str = "recent",
         cursor: str | None = None,
         limit: int = DEFAULT_PAGE_LIMIT,
@@ -960,6 +974,8 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
             control_state_id=control_state_id,
             severity=severity,
             claim_state=claim_state,
+            assignment_state=assignment_state,
+            priority=priority,
             sort=sort,
             organization_id=auth_context.organization_id,
             viewer_user_id=auth_context.user_id,
@@ -1094,6 +1110,26 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
             request_id=request_id,
         )
 
+    @app.post("/api/v1/auditflow/mappings/{mapping_id}/assign")
+    def assign_mapping(
+        mapping_id: str,
+        command: MappingAssignCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_product_admin_access),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.assign_mapping(
+                mapping_id,
+                command,
+                idempotency_key=idempotency_key,
+                organization_id=auth_context.organization_id,
+                reviewer_id=auth_context.user_id,
+                reviewer_role=auth_context.role,
+            ),
+            request_id=request_id,
+        )
+
     @app.post("/api/v1/auditflow/mappings/{mapping_id}/claim/release")
     def release_mapping_claim(
         mapping_id: str,
@@ -1109,6 +1145,26 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
                 idempotency_key=idempotency_key,
                 organization_id=auth_context.organization_id,
                 reviewer_id=auth_context.user_id,
+            ),
+            request_id=request_id,
+        )
+
+    @app.post("/api/v1/auditflow/mappings/{mapping_id}/assign/release")
+    def release_mapping_assignment(
+        mapping_id: str,
+        command: MappingAssignReleaseCommand,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        request_id: str | None = Header(default=None, alias="X-Request-Id"),
+        auth_context=Depends(require_reviewer_access),
+    ) -> dict[str, object]:
+        return success_envelope(
+            service.release_mapping_assignment(
+                mapping_id,
+                command,
+                idempotency_key=idempotency_key,
+                organization_id=auth_context.organization_id,
+                reviewer_id=auth_context.user_id,
+                reviewer_role=auth_context.role,
             ),
             request_id=request_id,
         )
