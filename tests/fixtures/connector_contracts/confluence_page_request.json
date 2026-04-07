@@ -1,0 +1,9 @@
+{
+  "selector": "PAGE-1",
+  "query": null,
+  "display_name": "Confluence import PAGE-1",
+  "source_locator": null,
+  "connection_id": "connection-confluence-1",
+  "url_template": "https://confluence.example.test/wiki/rest/api/content/{selector}",
+  "expected_url": "https://confluence.example.test/wiki/rest/api/content/PAGE-1"
+}

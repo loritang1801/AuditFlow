@@ -1,9 +1,9 @@
 # AuditFlow Agent Context
 
-- Date: 2026-03-20
-- Product: SOC 2 evidence management and audit package generation
+- 日期：2026-03-30
+- 产品：SOC 2 证据治理、映射评审与审计包导出
 
-## Completed Design Layers
+## 已完成的设计层
 
 - `PRD.md`
 - `ARCHITECTURE.md`
@@ -11,97 +11,34 @@
 - `API.md`
 - `WORKFLOW.md`
 - `PROMPT_TOOL.md`
+- `INTEGRATIONS.md`
 
-## Current Implementation State
+## 当前实现结论
 
-- Thin product adapters now exist under `src/auditflow_app/`
-- `bootstrap.py` filters shared workflows down to AuditFlow-only entries
-- `service.py` exposes domain-facing AuditFlow commands over the shared workflow API
-- `routes.py` exposes product-specific FastAPI route definitions
-- `repository.py` now uses a SQLAlchemy-backed workspace/cycle/import/review/gap/export repository
-- Workspace and cycle creation now seed a reusable SOC2 control catalog instead of relying on one implicit demo control row
-- `bootstrap.py` defaults to the SQLAlchemy repository over the shared runtime engine/session
-- `sample_payloads.py` includes demo payload and request helpers
-- `app.py` exposes a FastAPI factory over the shared workflow API
-- Implemented product APIs now include controls, control detail, evidence detail, imports, mapping review, gap decisions, narratives, and export submission
-- Import submission is now outbox-driven: import requests enqueue `auditflow.import.requested` jobs, and dispatching those jobs triggers the shared `auditflow_cycle_processing` workflow plus evidence/chunk/mapping materialization
-- Import acceptance now also emits `auditflow.import.accepted` product outbox events alongside the worker-dispatch import job event
-- `worker.py` now provides a dedicated import worker over shared `OutboxDispatcher`, filters unrelated outbox events, and supports connector-specific handlers for `upload`, `jira`, and `confluence`
-- `worker.py` now also provides `AuditFlowImportWorkerSupervisor` with retry/backoff, idle-stop, and heartbeat emission, and `scripts/run_import_worker.py` now supports supervised/long-running execution modes
-- `replay_harness.py` now provides a product-scoped replay/evaluation harness for fixed text/CSV/JSON/Markdown/HTML import-to-export scenarios, and `scripts/run_replay_harness.py` can list built-in scenarios plus saved baseline/report catalogs, capture baselines, and generate JSON/Markdown comparison reports under `replay_baselines/` and `replay_reports/`
-- Import acceptance now collapses duplicate upload and connector requests before enqueueing normalization jobs
-- Import processing now persists raw artifact text, normalized artifact text, and multi-chunk evidence rows before reviewer mapping
-- Upload imports now normalize CSV, JSON, Markdown, HTML, and plain-text artifacts into structured evidence chunks with parser metadata
-- Upload imports now also accept base64-backed binary payloads for PDF, image, DOCX, XLSX, and ZIP evidence, with heuristic text extraction / OCR-style normalization metadata for reviewer workflows
-- Import processing now also persists lexical retrieval index rows for evidence chunks, and reviewer decisions now materialize organization/cycle memory records for accepted/rejected mapping and gap outcomes
-- Reviewer mutations now emit `auditflow.review.recorded`, and export submission/completion now emit `auditflow.export.progress` plus package-ready outbox events for SSE consumers
-- Workflow-backed cycle processing now also emits `auditflow.mapping.progress` using product dashboard counts after materialization completes
-- Reviewer actions now append immutable `review_decision` audit rows for mapping and gap decisions
-- Cycle-level gap records can now be queried with status/severity filters for reviewer workbench backends
-- Review history can now be queried at the cycle level with optional mapping/gap filters for reviewer workbench backends
-- Cycle-level mapping records can now be queried with control/state filters for reviewer workbench backends
-- Product read APIs now include cycle-scoped evidence search plus reviewer-only memory record inspection for retrieval/prompt-grounding debugging
-- Retrieval is now hybrid-style: evidence chunks are indexed into both lexical and semantic retrieval rows, semantic rows now persist dense embedding vectors, and cycle evidence search combines lexical matching with cosine-ranked vector similarity
-- Import-driven cycle processing now builds grounded mapper/skeptic context from real cycle control metadata, historical evidence hits, reviewer-derived memory, and workspace freshness policy instead of fixed demo placeholders
-- Shared AuditFlow workflow definitions now pass accepted/rejection memory context directly into mapper and skeptic prompt assembly sources
-- `auth.py` now provides a SQLAlchemy-backed shared-style auth/session layer with seeded demo users, refresh-session persistence, signed bearer access tokens, `/api/v1/auth/session*` support, and a session-token authorizer used by the real FastAPI app by default
-- Workspace/cycle rows are now organization-scoped, and product routes plus service/repository calls now propagate the authenticated tenant context instead of dropping it after route auth
-- Review decisions now record the authenticated reviewer id instead of a fixed demo reviewer id
-- `tool_adapters.py` now binds AuditFlow tool adapter types to the product repository for artifact reads, evidence search, control lookup, review history, mapping candidate reads, snapshot reads, and export validation, and adapter execution now enforces the tool call's organization/workspace context
-- `bootstrap.py` now assembles a product-specific runtime over the shared catalog/stores instead of starting from `build_demo_runtime_components()`, and `product_gateway.py` provides a deterministic product model gateway with dynamic tool planning for collector/writer steps
-- Cycle list queries now support `status` filtering and import list routes now accept the contract-level `status` query alias
-- Workspace and cycle create/read models now persist contract-facing slug, owner, audit-period, and snapshot timestamp fields while accepting contract request aliases
-- Cycle creation plus upload/external import and export submission now support persisted idempotency keys, and cycle/import list routes now emit shared envelope metadata with cursor pagination
-- Review mapping and gap decision mutations now also support persisted idempotency keys, and the rest of the product read surface now emits shared envelopes instead of bare payloads
-- Mapping, gap, and review-queue reads now surface reviewer `snapshot_version`, and reviewer mutations reject stale snapshot decisions when the cycle has advanced or the caller provides a mismatched `expected_snapshot_version`
-- Shared health/workflow endpoints now also emit shared envelopes, and `/api/v1/events/stream` now supports workspace/cycle/export topic filters with payload-backed event context fallback when workflow state is unavailable
-- `routes.py` now enforces tenant-scoped minimum-role checks via a header-based authorizer hook, and `build_fastapi_app()` accepts custom authorizer injection for shared-platform integration later
-- Control matrix queries now support `coverage_status` and `search` filters at the product layer
-- Review queue queries now support `control_state_id`, `severity`, and `sort=recent|ranking` filtering at the product layer
-- Gap transitions now enforce a stricter terminal policy: `acknowledge` only from `open`, `reopen_gap` only from `resolved`
-- `routes.py` now contains explicit domain-error-to-HTTP mapping logic for product APIs
-- Import and export submission routes now return `202 Accepted` for async contract parity, and export submission rejects cycles with no accepted mappings, open review items, stale snapshot requests, and duplicate queued exports
-- Export package projection now records immutable package timestamps plus persisted package and manifest artifacts describing controls, accepted mappings, open gaps, and narratives for the frozen snapshot
-- Cycle-scoped export history can now be listed as a freeze ledger with `snapshot_version` and `status` filters for package audit/read-side tooling
-- Export freezes are now logically keyed by `cycle + snapshot_version`, so repeated export requests for the same approved snapshot return the existing immutable package instead of minting duplicates
-- `scripts/run_import_worker.py` now supports single-dispatch and polling modes with optional seeded upload jobs
-- Shared runtime foundation lives in `D:\project\SharedAgentCore`
-- Future AuditFlow code should consume vendored shared assets instead of re-implementing registries and runtime helpers
+- 产品层代码位于 `src/auditflow_app/`
+- `bootstrap.py` 只装配 AuditFlow 相关工作流，并基于 SQLAlchemy 运行时存储构建产品服务
+- `service.py` 已覆盖工作区、周期、导入、映射、缺口、叙述、导出、检索、记忆记录与运行时能力
+- `routes.py` 已提供真实 FastAPI 接口，包含会话鉴权、分页 envelope、领域错误映射与事件流
+- `repository.py` 已持久化工作区、周期、控制状态、证据块、映射、缺口、导出、审计日志、记忆记录与幂等键
+- 导入处理支持上传、Jira、Confluence 三类来源；上传支持多文本格式与若干二进制格式的启发式解析
+- 检索层已是混合检索：词法索引 + 稠密向量 + ANN 风格候选裁剪
+- 工具适配器已绑定产品仓储，可供工作流调用证据搜索、工件读取、控制项查询、历史读取与快照校验
+- 产品模型网关支持本地与可选 OpenAI 响应/嵌入路径，并在运行时能力接口中暴露实际模式
+- 回放能力已经覆盖固定导入到导出的场景，能保存 baseline 与生成 JSON/Markdown 报告
 
-## Intended Repo Layout
+## 当前实现边界
 
-- `src/`: future AuditFlow backend/app code
-- `tests/`: future product-specific tests
-- `scripts/`: helper scripts such as shared-core vendoring
-- `shared_core/`: vendored copy of `SharedAgentCore` when this becomes a standalone repo
+- 二进制解析仍以启发式抽取为主，不是完整 OCR 或办公文档深度解析
+- `pgvector`/持久化 ANN 仍属于可选模式，不是默认生产级索引方案
+- 评审工作台覆盖了领取、分配、冲突与快照控制，但还没有更复杂的多人协同语义
 
-## First Implementation Targets
+## 建议续做方向
 
-1. Expand binary parsing beyond the current PDF/image/DOCX/XLSX/ZIP heuristic support into stronger OCR and broader office/archive coverage
-2. Extract the current product-local session/token auth implementation into a shared platform package
-3. Upgrade the current optional provider-backed embedding path into durable `pgvector`/ANN search infrastructure
-4. Expand reviewer workbench state/query coverage beyond current review-decision history, claim/release handling, evidence search, memory inspection, cycle-level gap/mapping listing, and broader import edge-case coverage
-5. Expand the replay/evaluation harness beyond the current built-in fixture suite and basic saved-baseline catalog into fixture versioning and curated regression packs
+1. 把当前向量检索升级为稳定的 `pgvector` 或更强 ANN 基础设施
+2. 扩展二进制解析与 OCR，减少对启发式抽取的依赖
+3. 补强评审工作台的多人协作、重新分配、优先级与冲突恢复语义
+4. 扩展 replay 基线版本化与更系统的回归场景库
 
-## Resume Point
+## 本地事实来源
 
-- Latest completed commit: `fe01ffa` `Add AuditFlow retrieval and memory foundations`
-- Retrieval/memory v1 is now in place: lexical evidence search, persisted chunk index rows, and reviewer-derived organization/cycle memory records
-- Retrieval/prompt-grounding v2 is now in place: hybrid lexical+dense-vector evidence search plus mapper/skeptic memory grounding during import-driven cycle processing
-- Semantic search now also stores ANN-style bucket signatures in chunk metadata and uses two-stage candidate pruning before cosine scoring
-- Product gateway and embeddings now support optional env-configured OpenAI provider paths with automatic fallback to the local heuristic/deterministic implementations
-- Shared session/token validation is now wired into the product app, replacing the real app's previous header-only auth path while keeping the header authorizer as a test/stub fallback
-- Tenant-scoped workspace/cycle enforcement is now wired through routes, service, repository, and product tool adapters
-- Reviewer workbench now supports mapping claim/release leases plus claim-aware queue filtering and cross-reviewer conflict checks
-- External Jira/Confluence imports now support env-configured live HTTP fetch with automatic fallback to the existing synthetic handler payloads
-- Product admin users can now inspect effective model/embedding/vector/connector runtime modes through `/api/v1/auditflow/runtime-capabilities`
-- Product runtime now uses a product-specific gateway/runtime assembly instead of the shared demo bootstrap
-- The next implementation start point should be one of these:
-  1. Upgrade the current provider-backed embedding option into persistent `pgvector`/ANN indexing and retrieval
-  2. Expand tool-backed workflow execution beyond repository reads into live connector/data-source adapters and richer model-provider controls
-  3. Expand reviewer workbench from claim/conflict protection into fuller multi-actor merge, reassignment, and queue prioritization semantics
-- If continuing the current product track, start with item 1 above before deepening more reviewer/UI surfaces
-
-## Local Note
-
-The local workspace source of truth for shared assets remains `D:\project\SharedAgentCore`.
+共享运行时的本地源仍是 `D:\project\SharedAgentCore`。

@@ -14,10 +14,8 @@ from auditflow_app.bootstrap import build_app_service
 from auditflow_app.routes import create_fastapi_app
 from auditflow_app.shared_runtime import load_shared_agent_platform
 
-try:
-    from fastapi.testclient import TestClient
-except ImportError:  # pragma: no cover - exercised only when fastapi is absent
-    TestClient = None
+_AP = load_shared_agent_platform()
+TestClient = _AP.fastapi_test_client_class()
 
 
 class AuditFlowAuthServiceTests(unittest.TestCase):
@@ -153,60 +151,52 @@ class AuditFlowAuthServiceTests(unittest.TestCase):
 class AuditFlowAuthRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.service = build_app_service()
-        self.addCleanup(self.service.close)
         self.app = create_fastapi_app(self.service)
-        self.client = TestClient(self.app)
+        _AP.assert_managed_app_service(self, self.app, state_attr="auditflow_service")
+        self.client = _AP.create_managed_test_client(self, self.app)
 
     def test_session_routes_issue_cookie_and_authorize_me(self) -> None:
-        login_response = self.client.post(
-            "/api/v1/auth/session",
-            json={
-                "email": "reviewer@example.com",
-                "password": "auditflow-demo",
-                "organization_slug": "acme",
-            },
+        _login_response, access_token = _AP.login_via_session_route(
+            self,
+            self.client,
+            email="reviewer@example.com",
+            password="auditflow-demo",
         )
 
-        self.assertEqual(login_response.status_code, 200)
-        self.assertIn("refresh_token", login_response.cookies)
-        access_token = login_response.json()["data"]["access_token"]
-
-        me_response = self.client.get(
-            "/api/v1/me",
-            headers={"Authorization": f"Bearer {access_token}"},
+        _me_response, me_data = _AP.get_current_user_via_bearer(
+            self,
+            self.client,
+            access_token=access_token,
         )
 
-        self.assertEqual(me_response.status_code, 200)
-        self.assertEqual(me_response.json()["data"]["active_organization"]["slug"], "acme")
+        _AP.assert_fields(
+            self,
+            me_data,
+            expected_fields={"active_organization.slug": "acme"},
+        )
 
     def test_refresh_and_revoke_current_session(self) -> None:
-        login_response = self.client.post(
-            "/api/v1/auth/session",
-            json={
-                "email": "admin@example.com",
-                "password": "auditflow-demo",
-                "organization_slug": "acme",
-            },
+        _login_response, access_token = _AP.login_via_session_route(
+            self,
+            self.client,
+            email="admin@example.com",
+            password="auditflow-demo",
         )
-        access_token = login_response.json()["data"]["access_token"]
 
-        refresh_response = self.client.post("/api/v1/auth/session/refresh")
-        self.assertEqual(refresh_response.status_code, 200)
-        refreshed_access_token = refresh_response.json()["data"]["access_token"]
+        _refresh_response, refreshed_access_token = _AP.refresh_session_access_token(self, self.client)
         self.assertNotEqual(refreshed_access_token, access_token)
 
-        revoke_response = self.client.delete(
-            "/api/v1/auth/session/current",
-            headers={"Authorization": f"Bearer {refreshed_access_token}"},
-        )
-        self.assertEqual(revoke_response.status_code, 204)
+        _AP.revoke_current_session(self, self.client, access_token=refreshed_access_token)
 
-        blocked_response = self.client.get(
+        _AP.request_with_bearer_and_assert_json_error(
+            self,
+            self.client,
+            "GET",
             "/api/v1/me",
-            headers={"Authorization": f"Bearer {refreshed_access_token}"},
+            access_token=refreshed_access_token,
+            status_code=401,
+            error_code="AUTH_SESSION_REVOKED",
         )
-        self.assertEqual(blocked_response.status_code, 401)
-        self.assertEqual(blocked_response.json()["error"]["code"], "AUTH_SESSION_REVOKED")
 
 
 if __name__ == "__main__":

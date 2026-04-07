@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-auditflow-schema-version": "2026-03-27.1",
+  "$defs": {
+    "CanonicalConfluenceBody": {
+      "additionalProperties": false,
+      "properties": {
+        "storage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CanonicalConfluenceBodyValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "view": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CanonicalConfluenceBodyValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "export_view": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CanonicalConfluenceBodyValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "plain": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CanonicalConfluenceBodyValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "CanonicalConfluenceBody",
+      "type": "object"
+    },
+    "CanonicalConfluenceBodyValue": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "CanonicalConfluenceBodyValue",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "body": {
+      "$ref": "#/$defs/CanonicalConfluenceBody"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "body"
+  ],
+  "title": "CanonicalConfluencePageResponse",
+  "type": "object"
+}

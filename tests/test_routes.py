@@ -40,67 +40,78 @@ from auditflow_app.routes import (
     paginate_collection,
     success_envelope,
 )
+from auditflow_app.shared_runtime import load_shared_agent_platform
 
-try:
-    from fastapi.testclient import TestClient
-except ImportError:  # pragma: no cover - exercised only when fastapi is absent
-    TestClient = None
+_AP = load_shared_agent_platform()
+TestClient = _AP.fastapi_test_client_class()
 
 
 class AuditFlowRouteErrorMappingTests(unittest.TestCase):
     def test_maps_workspace_not_found_key_error_to_404(self) -> None:
-        status_code, payload = map_domain_error(
-            KeyError("workspace-404"),
-            path="/api/v1/auditflow/workspaces/workspace-404",
+        _AP.assert_domain_error_mapping(
+            self,
+            map_domain_error(
+                KeyError("workspace-404"),
+                path="/api/v1/auditflow/workspaces/workspace-404",
+            ),
+            status_code=404,
+            error_code="AUDIT_WORKSPACE_NOT_FOUND",
         )
-
-        self.assertEqual(status_code, 404)
-        self.assertEqual(payload["error"]["code"], "AUDIT_WORKSPACE_NOT_FOUND")
 
     def test_maps_cycle_not_found_key_error_to_404(self) -> None:
-        status_code, payload = map_domain_error(
-            KeyError("cycle-404"),
-            path="/api/v1/auditflow/cycles/cycle-404/dashboard",
+        _AP.assert_domain_error_mapping(
+            self,
+            map_domain_error(
+                KeyError("cycle-404"),
+                path="/api/v1/auditflow/cycles/cycle-404/dashboard",
+            ),
+            status_code=404,
+            error_code="AUDIT_CYCLE_NOT_FOUND",
         )
-
-        self.assertEqual(status_code, 404)
-        self.assertEqual(payload["error"]["code"], "AUDIT_CYCLE_NOT_FOUND")
 
     def test_maps_mapping_stale_conflict_to_contract_code(self) -> None:
-        status_code, payload = map_domain_error(
-            ValueError("CONFLICT_STALE_RESOURCE"),
-            path="/api/v1/auditflow/mappings/mapping-1/review",
+        _AP.assert_domain_error_mapping(
+            self,
+            map_domain_error(
+                ValueError("CONFLICT_STALE_RESOURCE"),
+                path="/api/v1/auditflow/mappings/mapping-1/review",
+            ),
+            status_code=409,
+            error_code="MAPPING_REVIEW_CONFLICT",
         )
-
-        self.assertEqual(status_code, 409)
-        self.assertEqual(payload["error"]["code"], "MAPPING_REVIEW_CONFLICT")
 
     def test_maps_export_readiness_error_to_422(self) -> None:
-        status_code, payload = map_domain_error(
-            ValueError("CYCLE_NOT_READY_FOR_EXPORT"),
-            path="/api/v1/auditflow/cycles/cycle-1/exports",
+        _AP.assert_domain_error_mapping(
+            self,
+            map_domain_error(
+                ValueError("CYCLE_NOT_READY_FOR_EXPORT"),
+                path="/api/v1/auditflow/cycles/cycle-1/exports",
+            ),
+            status_code=422,
+            error_code="CYCLE_NOT_READY_FOR_EXPORT",
         )
-
-        self.assertEqual(status_code, 422)
-        self.assertEqual(payload["error"]["code"], "CYCLE_NOT_READY_FOR_EXPORT")
 
     def test_maps_invalid_review_queue_sort_to_400(self) -> None:
-        status_code, payload = map_domain_error(
-            ValueError("INVALID_REVIEW_QUEUE_SORT"),
-            path="/api/v1/auditflow/review-queue",
+        _AP.assert_domain_error_mapping(
+            self,
+            map_domain_error(
+                ValueError("INVALID_REVIEW_QUEUE_SORT"),
+                path="/api/v1/auditflow/review-queue",
+            ),
+            status_code=400,
+            error_code="INVALID_REVIEW_QUEUE_SORT",
         )
-
-        self.assertEqual(status_code, 400)
-        self.assertEqual(payload["error"]["code"], "INVALID_REVIEW_QUEUE_SORT")
 
     def test_maps_duplicate_workspace_slug_to_409(self) -> None:
-        status_code, payload = map_domain_error(
-            ValueError("WORKSPACE_SLUG_ALREADY_EXISTS"),
-            path="/api/v1/auditflow/workspaces",
+        _AP.assert_domain_error_mapping(
+            self,
+            map_domain_error(
+                ValueError("WORKSPACE_SLUG_ALREADY_EXISTS"),
+                path="/api/v1/auditflow/workspaces",
+            ),
+            status_code=409,
+            error_code="WORKSPACE_SLUG_ALREADY_EXISTS",
         )
-
-        self.assertEqual(status_code, 409)
-        self.assertEqual(payload["error"]["code"], "WORKSPACE_SLUG_ALREADY_EXISTS")
 
     def test_success_envelope_includes_workflow_and_request_metadata(self) -> None:
         payload = success_envelope(
@@ -109,56 +120,73 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
             workflow_run_id="wf-123",
         )
 
-        self.assertEqual(payload["data"]["package_id"], "pkg-1")
-        self.assertEqual(payload["meta"]["request_id"], "req-123")
-        self.assertEqual(payload["meta"]["workflow_run_id"], "wf-123")
-        self.assertEqual(payload["meta"]["has_more"], False)
-
-    def test_paginate_collection_uses_cursor_metadata(self) -> None:
-        page_one, next_cursor, has_more = paginate_collection([1, 2, 3], limit=2)
-        page_two, second_cursor, second_has_more = paginate_collection(
-            [1, 2, 3],
-            cursor=next_cursor,
-            limit=2,
+        _AP.assert_success_envelope(
+            self,
+            payload,
+            data_expected_fields={"package_id": "pkg-1"},
+            meta_expected_fields={
+                "request_id": "req-123",
+                "workflow_run_id": "wf-123",
+                "has_more": False,
+            },
         )
 
-        self.assertEqual(page_one, [1, 2])
-        self.assertTrue(has_more)
-        self.assertIsNotNone(next_cursor)
-        self.assertEqual(page_two, [3])
-        self.assertFalse(second_has_more)
-        self.assertIsNone(second_cursor)
+    def test_paginate_collection_uses_cursor_metadata(self) -> None:
+        next_cursor = _AP.assert_paginated_window(
+            self,
+            paginate_collection([1, 2, 3], limit=2),
+            expected_items=[1, 2],
+            has_more=True,
+            next_cursor_present=True,
+        )
+        _AP.assert_paginated_window(
+            self,
+            paginate_collection(
+                [1, 2, 3],
+                cursor=next_cursor,
+                limit=2,
+            ),
+            expected_items=[3],
+            has_more=False,
+            next_cursor_present=False,
+        )
 
     def test_invalid_pagination_cursor_maps_to_400(self) -> None:
         with self.assertRaisesRegex(ValueError, "INVALID_CURSOR"):
             paginate_collection([1, 2], cursor="bad-cursor", limit=1)
 
     def test_maps_idempotency_conflict_to_409(self) -> None:
-        status_code, payload = map_domain_error(
-            ValueError("IDEMPOTENCY_CONFLICT"),
-            path="/api/v1/auditflow/cycles",
+        _AP.assert_domain_error_mapping(
+            self,
+            map_domain_error(
+                ValueError("IDEMPOTENCY_CONFLICT"),
+                path="/api/v1/auditflow/cycles",
+            ),
+            status_code=409,
+            error_code="IDEMPOTENCY_CONFLICT",
         )
-
-        self.assertEqual(status_code, 409)
-        self.assertEqual(payload["error"]["code"], "IDEMPOTENCY_CONFLICT")
 
     def test_maps_invalid_artifact_bytes_to_400(self) -> None:
-        status_code, payload = map_domain_error(
-            ValueError("INVALID_ARTIFACT_BYTES"),
-            path="/api/v1/auditflow/cycles/cycle-1/imports/upload",
+        _AP.assert_domain_error_mapping(
+            self,
+            map_domain_error(
+                ValueError("INVALID_ARTIFACT_BYTES"),
+                path="/api/v1/auditflow/cycles/cycle-1/imports/upload",
+            ),
+            status_code=400,
+            error_code="INVALID_ARTIFACT_BYTES",
         )
-
-        self.assertEqual(status_code, 400)
-        self.assertEqual(payload["error"]["code"], "INVALID_ARTIFACT_BYTES")
 
     def test_maps_invalid_search_query_to_400(self) -> None:
-        status_code, payload = map_domain_error(
-            ValueError("INVALID_SEARCH_QUERY"),
-            path="/api/v1/auditflow/cycles/cycle-1/evidence-search",
+        _AP.assert_domain_error_mapping(
+            self,
+            map_domain_error(
+                ValueError("INVALID_SEARCH_QUERY"),
+                path="/api/v1/auditflow/cycles/cycle-1/evidence-search",
+            ),
+            status_code=400,
+            error_code="INVALID_SEARCH_QUERY",
         )
-
-        self.assertEqual(status_code, 400)
-        self.assertEqual(payload["error"]["code"], "INVALID_SEARCH_QUERY")
 
     def test_resolves_sse_event_context_from_runtime_state(self) -> None:
         state_store = SimpleNamespace(
@@ -184,10 +212,16 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
 
         context = _resolve_outbox_event_context(service, event)
 
-        self.assertEqual(context["workspace_id"], "ws-1")
-        self.assertEqual(context["subject_type"], "audit_cycle")
-        self.assertEqual(context["subject_id"], "cycle-1")
-        self.assertEqual(context["topic"], "workflow")
+        _AP.assert_fields(
+            self,
+            context,
+            expected_fields={
+                "workspace_id": "ws-1",
+                "subject_type": "audit_cycle",
+                "subject_id": "cycle-1",
+                "topic": "workflow",
+            },
+        )
 
     def test_resolves_sse_event_context_from_event_payload_fallback(self) -> None:
         state_store = SimpleNamespace(load=lambda workflow_run_id: (_ for _ in ()).throw(KeyError(workflow_run_id)))
@@ -208,10 +242,16 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
 
         context = _resolve_outbox_event_context(service, event)
 
-        self.assertEqual(context["organization_id"], "org-2")
-        self.assertEqual(context["workspace_id"], "ws-2")
-        self.assertEqual(context["subject_type"], "audit_cycle")
-        self.assertEqual(context["subject_id"], "cycle-2")
+        _AP.assert_fields(
+            self,
+            context,
+            expected_fields={
+                "organization_id": "org-2",
+                "workspace_id": "ws-2",
+                "subject_type": "audit_cycle",
+                "subject_id": "cycle-2",
+            },
+        )
 
     def test_formats_sse_message_with_json_payload(self) -> None:
         message = _format_sse_message(
@@ -220,10 +260,15 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
             payload={"workspace_id": "ws-1"},
         )
 
-        self.assertIn("id: evt-1", message)
-        self.assertIn("event: auditflow.package.ready", message)
-        self.assertIn('"workspace_id": "ws-1"', message)
-        self.assertEqual(_event_topic("auditflow.package.ready"), "auditflow")
+        _AP.assert_sse_message_contract(
+            self,
+            message,
+            event_id="evt-1",
+            event_name="auditflow.package.ready",
+            expected_substrings=['"workspace_id": "ws-1"'],
+            resolved_topic=_event_topic("auditflow.package.ready"),
+            expected_topic="auditflow",
+        )
 
     def test_event_topics_include_domain_specific_aliases(self) -> None:
         context = {
@@ -236,17 +281,30 @@ class AuditFlowRouteErrorMappingTests(unittest.TestCase):
 
         topics = _event_topics(context)
 
-        self.assertIn("auditflow.workspace.ws-1", topics)
-        self.assertIn("auditflow.cycle.cycle-1", topics)
-        self.assertIn("auditflow.export.pkg-1", topics)
-        self.assertTrue(_matches_event_topic(context, "auditflow.cycle.cycle-1"))
-        self.assertFalse(_matches_event_topic(context, "workflow"))
+        _AP.assert_event_topic_routing(
+            self,
+            context,
+            topics,
+            expected_topics=[
+                "auditflow.workspace.ws-1",
+                "auditflow.cycle.cycle-1",
+                "auditflow.export.pkg-1",
+            ],
+            matcher=_matches_event_topic,
+            matching_topic="auditflow.cycle.cycle-1",
+            rejected_topic="workflow",
+        )
 
     def test_missing_last_event_id_does_not_block_stream_progress(self) -> None:
         pending = [SimpleNamespace(event=SimpleNamespace(event_id="evt-1"))]
 
-        self.assertIsNone(_normalize_resume_after_id(pending, "evt-missing"))
-        self.assertEqual(_normalize_resume_after_id(pending, "evt-1"), "evt-1")
+        _AP.assert_resume_after_id_contract(
+            self,
+            _normalize_resume_after_id,
+            pending,
+            missing_id="evt-missing",
+            existing_id="evt-1",
+        )
 
 
 class AuditFlowAuthorizationTests(unittest.TestCase):
@@ -300,39 +358,47 @@ class AuditFlowAuthorizationTests(unittest.TestCase):
 @unittest.skipIf(TestClient is None, "fastapi test client unavailable")
 class AuditFlowRouteAuthorizationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.client = TestClient(create_fastapi_app(_stub_service()))
+        self.client = _AP.create_managed_test_client(self, create_fastapi_app(_stub_service()))
 
     def test_health_route_remains_public(self) -> None:
         response = self.client.get("/health")
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["status"], "ok")
+        _AP.assert_health_response(self, response, product="auditflow")
 
     def test_viewer_route_requires_authorization_header(self) -> None:
-        response = self.client.get(
+        _AP.request_and_assert_json_error(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/cycles",
+            status_code=401,
+            error_code="AUTH_REQUIRED",
             params={"workspace_id": "ws-1"},
             headers={"X-Organization-Id": "org-1"},
         )
 
-        self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json()["error"]["code"], "AUTH_REQUIRED")
-
     def test_viewer_route_requires_organization_context(self) -> None:
-        response = self.client.get(
+        _AP.request_and_assert_json_error(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/cycles",
+            status_code=400,
+            error_code="TENANT_CONTEXT_REQUIRED",
             params={"workspace_id": "ws-1"},
             headers={"Authorization": "Bearer test-token"},
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["error"]["code"], "TENANT_CONTEXT_REQUIRED")
-
     def test_reviewer_route_rejects_viewer_role(self) -> None:
-        response = self.client.post(
+        _AP.request_with_header_auth_and_assert_json_error(
+            self,
+            self.client,
+            "POST",
             "/api/v1/auditflow/cycles",
+            role="viewer",
+            status_code=403,
+            error_code="AUTH_FORBIDDEN",
             headers={
-                **_auth_headers(role="viewer"),
                 "Idempotency-Key": "cycle-create-1",
             },
             json={
@@ -341,14 +407,15 @@ class AuditFlowRouteAuthorizationTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["error"]["code"], "AUTH_FORBIDDEN")
-
     def test_reviewer_route_allows_reviewer_role(self) -> None:
-        response = self.client.post(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "POST",
             "/api/v1/auditflow/cycles",
+            role="reviewer",
+            status_code=201,
             headers={
-                **_auth_headers(role="reviewer"),
                 "Idempotency-Key": "cycle-create-2",
             },
             json={
@@ -357,13 +424,16 @@ class AuditFlowRouteAuthorizationTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["data"]["id"], "cycle-1")
+        _AP.assert_fields(self, data, expected_fields={"id": "cycle-1"})
 
     def test_product_admin_route_accepts_org_admin_alias(self) -> None:
-        response = self.client.post(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "POST",
             "/api/v1/auditflow/workspaces",
-            headers=_auth_headers(role="org_admin"),
+            role="org_admin",
+            status_code=201,
             json={
                 "name": "Acme SOC2",
                 "slug": "acme-soc2",
@@ -371,187 +441,243 @@ class AuditFlowRouteAuthorizationTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["data"]["id"], "ws-1")
+        _AP.assert_fields(self, data, expected_fields={"id": "ws-1"})
 
     def test_runtime_capabilities_route_requires_product_admin_access(self) -> None:
-        response = self.client.get(
+        _AP.request_with_header_auth_and_assert_json_error(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/runtime-capabilities",
-            headers=_auth_headers(role="reviewer"),
+            role="reviewer",
+            status_code=403,
+            error_code="AUTH_FORBIDDEN",
         )
-
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["error"]["code"], "AUTH_FORBIDDEN")
 
     def test_runtime_capabilities_route_returns_capability_payload_for_admin(self) -> None:
-        response = self.client.get(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/runtime-capabilities",
-            headers=_auth_headers(role="org_admin"),
+            role="org_admin",
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["product"], "auditflow")
-        self.assertEqual(response.json()["data"]["vector_search"]["backend_id"], "ann-metadata-json")
+        _AP.assert_fields(
+            self,
+            data,
+            expected_fields={
+                "product": "auditflow",
+                "vector_search.backend_id": "ann-metadata-json",
+            },
+        )
 
     def test_viewer_route_allows_evidence_search(self) -> None:
-        response = self.client.get(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/cycles/cycle-1/evidence-search",
+            role="viewer",
             params={"query": "access review"},
-            headers=_auth_headers(role="viewer"),
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["total_count"], 1)
-        self.assertEqual(response.json()["data"]["items"][0]["evidence_chunk_id"], "chunk-1")
+        _AP.assert_fields(
+            self,
+            data,
+            expected_fields={"total_count": 1, "items.0.evidence_chunk_id": "chunk-1"},
+        )
 
     def test_memory_records_route_requires_reviewer_role(self) -> None:
-        response = self.client.get(
+        _AP.request_with_header_auth_and_assert_json_error(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/cycles/cycle-1/memory-records",
-            headers=_auth_headers(role="viewer"),
+            role="viewer",
+            status_code=403,
+            error_code="AUTH_FORBIDDEN",
         )
 
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["error"]["code"], "AUTH_FORBIDDEN")
-
     def test_reviewer_route_allows_mapping_claim(self) -> None:
-        response = self.client.post(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "POST",
             "/api/v1/auditflow/mappings/mapping-1/claim",
+            role="reviewer",
             headers={
-                **_auth_headers(role="reviewer"),
                 "Idempotency-Key": "claim-1",
             },
             json={"lease_seconds": 600},
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["mapping_id"], "mapping-1")
-        self.assertEqual(response.json()["data"]["claimed_by_user_id"], "user-1")
+        _AP.assert_fields(
+            self,
+            data,
+            expected_fields={"mapping_id": "mapping-1", "claimed_by_user_id": "user-1"},
+        )
 
     def test_product_admin_route_allows_mapping_assignment(self) -> None:
-        response = self.client.post(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "POST",
             "/api/v1/auditflow/mappings/mapping-1/assign",
+            role="org_admin",
             headers={
-                **_auth_headers(role="org_admin"),
                 "Idempotency-Key": "assign-1",
             },
             json={"reviewer_user_id": "user-2", "note": "Route to the access-review owner."},
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["mapping_id"], "mapping-1")
-        self.assertEqual(response.json()["data"]["assigned_reviewer_id"], "user-2")
+        _AP.assert_fields(
+            self,
+            data,
+            expected_fields={"mapping_id": "mapping-1", "assigned_reviewer_id": "user-2"},
+        )
 
     def test_reviewer_route_rejects_mapping_assignment_without_admin_access(self) -> None:
-        response = self.client.post(
+        _AP.request_with_header_auth_and_assert_json_error(
+            self,
+            self.client,
+            "POST",
             "/api/v1/auditflow/mappings/mapping-1/assign",
+            role="reviewer",
+            status_code=403,
+            error_code="AUTH_FORBIDDEN",
             headers={
-                **_auth_headers(role="reviewer"),
                 "Idempotency-Key": "assign-2",
             },
             json={"reviewer_user_id": "user-2", "note": "Route to the access-review owner."},
         )
 
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["error"]["code"], "AUTH_FORBIDDEN")
-
     def test_reviewer_route_lists_tool_access_audit(self) -> None:
-        response = self.client.get(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/tool-access-audit",
+            role="reviewer",
             params={"workflow_run_id": "wf-tool-1", "tool_name": "evidence.search"},
-            headers=_auth_headers(role="reviewer"),
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["total_count"], 1)
-        self.assertEqual(response.json()["data"]["items"][0]["workflow_run_id"], "wf-tool-1")
-        self.assertEqual(response.json()["data"]["items"][0]["tool_name"], "evidence.search")
+        _AP.assert_fields(self, data, expected_fields={"total_count": 1})
+        _AP.assert_collection_contains(
+            self,
+            data["items"],
+            expected_fields={"workflow_run_id": "wf-tool-1", "tool_name": "evidence.search"},
+        )
 
     def test_viewer_route_returns_cycle_dashboard_with_tool_access_summary(self) -> None:
-        response = self.client.get(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/cycles/cycle-1/dashboard",
-            headers=_auth_headers(role="viewer"),
+            role="viewer",
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["cycle"]["id"], "cycle-1")
-        self.assertEqual(response.json()["data"]["tool_access_summary"]["total_count"], 2)
-        self.assertEqual(response.json()["data"]["tool_access_summary"]["latest_workflow_run_id"], "wf-tool-2")
+        _AP.assert_fields(
+            self,
+            data,
+            expected_fields={
+                "cycle.id": "cycle-1",
+                "tool_access_summary.total_count": 2,
+                "tool_access_summary.latest_workflow_run_id": "wf-tool-2",
+            },
+        )
 
     def test_reviewer_route_lists_cycle_tool_access_audit(self) -> None:
-        response = self.client.get(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/cycles/cycle-1/tool-access-audit",
+            role="reviewer",
             params={"workflow_run_id": "wf-tool-2", "tool_name": "mapping.read_candidates"},
-            headers=_auth_headers(role="reviewer"),
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["total_count"], 1)
-        self.assertEqual(response.json()["data"]["items"][0]["workflow_run_id"], "wf-tool-2")
-        self.assertEqual(response.json()["data"]["items"][0]["tool_name"], "mapping.read_candidates")
+        _AP.assert_fields(self, data, expected_fields={"total_count": 1})
+        _AP.assert_collection_contains(
+            self,
+            data["items"],
+            expected_fields={"workflow_run_id": "wf-tool-2", "tool_name": "mapping.read_candidates"},
+        )
 
     def test_viewer_route_returns_control_detail_with_tool_access_summary(self) -> None:
-        response = self.client.get(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/cycles/cycle-1/controls/control-state-1",
-            headers=_auth_headers(role="viewer"),
+            role="viewer",
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["control_state"]["control_code"], "CC6.1")
-        self.assertEqual(response.json()["data"]["tool_access_summary"]["total_count"], 2)
-        self.assertEqual(
-            response.json()["data"]["tool_access_summary"]["latest_workflow_run_id"],
-            "wf-tool-3",
+        _AP.assert_fields(
+            self,
+            data,
+            expected_fields={
+                "control_state.control_code": "CC6.1",
+                "tool_access_summary.total_count": 2,
+                "tool_access_summary.latest_workflow_run_id": "wf-tool-3",
+            },
         )
 
     def test_reviewer_route_lists_control_tool_access_audit(self) -> None:
-        response = self.client.get(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/cycles/cycle-1/controls/control-state-1/tool-access-audit",
+            role="reviewer",
             params={"tool_name": "mapping.read_candidates"},
-            headers=_auth_headers(role="reviewer"),
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["total_count"], 1)
-        self.assertEqual(response.json()["data"]["items"][0]["workflow_run_id"], "wf-tool-2")
-        self.assertEqual(response.json()["data"]["items"][0]["tool_name"], "mapping.read_candidates")
+        _AP.assert_fields(self, data, expected_fields={"total_count": 1})
+        _AP.assert_collection_contains(
+            self,
+            data["items"],
+            expected_fields={"workflow_run_id": "wf-tool-2", "tool_name": "mapping.read_candidates"},
+        )
 
     def test_reviewer_route_returns_review_queue_with_mapping_tool_access_summary(self) -> None:
-        response = self.client.get(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/review-queue",
+            role="reviewer",
             params={"cycle_id": "cycle-1"},
-            headers=_auth_headers(role="reviewer"),
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.json()["data"]), 1)
-        self.assertEqual(response.json()["data"][0]["mapping_id"], "mapping-1")
-        self.assertEqual(response.json()["data"][0]["tool_access_summary"]["total_count"], 2)
-        self.assertEqual(
-            response.json()["data"][0]["tool_access_summary"]["latest_workflow_run_id"],
-            "wf-tool-3",
+        _AP.assert_collection_size(self, data, size=1)
+        _AP.assert_collection_contains(
+            self,
+            data,
+            expected_fields={
+                "mapping_id": "mapping-1",
+                "tool_access_summary.total_count": 2,
+                "tool_access_summary.latest_workflow_run_id": "wf-tool-3",
+            },
         )
 
     def test_reviewer_route_lists_mapping_tool_access_audit(self) -> None:
-        response = self.client.get(
+        _response, data = _AP.request_with_header_auth_and_get_data(
+            self,
+            self.client,
+            "GET",
             "/api/v1/auditflow/mappings/mapping-1/tool-access-audit",
+            role="reviewer",
             params={"tool_name": "mapping.read_candidates"},
-            headers=_auth_headers(role="reviewer"),
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["data"]["total_count"], 1)
-        self.assertEqual(response.json()["data"]["items"][0]["workflow_run_id"], "wf-tool-2")
-        self.assertEqual(response.json()["data"]["items"][0]["tool_name"], "mapping.read_candidates")
-
-
-def _auth_headers(*, role: str) -> dict[str, str]:
-    return {
-        "Authorization": "Bearer test-token",
-        "X-Organization-Id": "org-1",
-        "X-User-Id": "user-1",
-        "X-User-Role": role,
-    }
-
+        _AP.assert_fields(self, data, expected_fields={"total_count": 1})
+        _AP.assert_collection_contains(
+            self,
+            data["items"],
+            expected_fields={"workflow_run_id": "wf-tool-2", "tool_name": "mapping.read_candidates"},
+        )
 
 def _stub_service():
     created_at = datetime(2026, 3, 18, 15, 0, tzinfo=UTC)

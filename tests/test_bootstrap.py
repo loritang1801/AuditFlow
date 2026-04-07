@@ -20,6 +20,9 @@ from auditflow_app.bootstrap import (
 )
 from auditflow_app.replay_harness import AuditFlowReplayHarness
 from auditflow_app.sample_payloads import cycle_processing_request, export_generation_request, upload_import_command
+from auditflow_app.shared_runtime import load_shared_agent_platform
+
+_AP = load_shared_agent_platform()
 
 
 class AuditFlowBootstrapTests(unittest.TestCase):
@@ -118,7 +121,9 @@ class AuditFlowBootstrapTests(unittest.TestCase):
         except Exception as exc:
             self.assertEqual(exc.__class__.__name__, "FastAPIUnavailableError")
         else:
+            app_service = _AP.assert_managed_app_service(self, app, state_attr="auditflow_service")
             self.assertTrue(hasattr(app, "routes"))
+            self.assertIs(app.state.auditflow_service, app_service)
 
     def test_build_import_worker_and_dispatch_jobs(self) -> None:
         worker = build_import_worker()

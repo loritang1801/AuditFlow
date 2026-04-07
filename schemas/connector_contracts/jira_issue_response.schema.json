@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-auditflow-schema-version": "2026-03-27.1",
+  "$defs": {
+    "CanonicalJiraAssignee": {
+      "additionalProperties": false,
+      "properties": {
+        "displayName": {
+          "title": "Displayname",
+          "type": "string"
+        }
+      },
+      "required": [
+        "displayName"
+      ],
+      "title": "CanonicalJiraAssignee",
+      "type": "object"
+    },
+    "CanonicalJiraComment": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/CanonicalJiraTextBlock"
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "title": "CanonicalJiraComment",
+      "type": "object"
+    },
+    "CanonicalJiraCommentCollection": {
+      "additionalProperties": false,
+      "properties": {
+        "comments": {
+          "items": {
+            "$ref": "#/$defs/CanonicalJiraComment"
+          },
+          "title": "Comments",
+          "type": "array"
+        }
+      },
+      "required": [
+        "comments"
+      ],
+      "title": "CanonicalJiraCommentCollection",
+      "type": "object"
+    },
+    "CanonicalJiraFields": {
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CanonicalJiraStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "assignee": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CanonicalJiraAssignee"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "description": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CanonicalJiraTextBlock"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "comment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CanonicalJiraCommentCollection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "title": "CanonicalJiraFields",
+      "type": "object"
+    },
+    "CanonicalJiraStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CanonicalJiraStatus",
+      "type": "object"
+    },
+    "CanonicalJiraTextBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "CanonicalJiraTextBlock",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "key": {
+      "title": "Key",
+      "type": "string"
+    },
+    "fields": {
+      "$ref": "#/$defs/CanonicalJiraFields"
+    }
+  },
+  "required": [
+    "key",
+    "fields"
+  ],
+  "title": "CanonicalJiraIssueResponse",
+  "type": "object"
+}

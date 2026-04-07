@@ -1,0 +1,9 @@
+{
+  "selector": "SEC-123",
+  "query": null,
+  "display_name": "JIRA import SEC-123",
+  "source_locator": null,
+  "connection_id": "connection-jira-1",
+  "url_template": "https://jira.example.test/rest/api/3/issue/{selector}",
+  "expected_url": "https://jira.example.test/rest/api/3/issue/SEC-123"
+}

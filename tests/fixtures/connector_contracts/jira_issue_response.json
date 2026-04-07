@@ -1,0 +1,24 @@
+{
+  "key": "SEC-123",
+  "fields": {
+    "summary": "Quarterly access review",
+    "status": {
+      "name": "Done"
+    },
+    "assignee": {
+      "displayName": "Alice Reviewer"
+    },
+    "description": {
+      "text": "Emergency access was reviewed and revoked where needed."
+    },
+    "comment": {
+      "comments": [
+        {
+          "body": {
+            "text": "Reviewer confirmed the revocation evidence."
+          }
+        }
+      ]
+    }
+  }
+}

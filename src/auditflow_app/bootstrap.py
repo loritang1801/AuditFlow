@@ -110,12 +110,11 @@ def build_app_service(*, database_url: str | None = None) -> AuditFlowAppService
 def build_fastapi_app(*, database_url: str | None = None, authorizer: AuditFlowAuthorizer | None = None):
     from .routes import create_fastapi_app
 
-    service = build_app_service(database_url=database_url)
-    try:
-        return create_fastapi_app(service, authorizer=authorizer)
-    except Exception:
-        service.close()
-        raise
+    ap = load_shared_agent_platform()
+    return ap.build_managed_fastapi_app(
+        service_factory=lambda: build_app_service(database_url=database_url),
+        app_factory=lambda service: create_fastapi_app(service, authorizer=authorizer),
+    )
 
 
 def build_import_worker(*, database_url: str | None = None) -> AuditFlowImportWorker:

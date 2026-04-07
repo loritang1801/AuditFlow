@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-auditflow-schema-version": "2026-03-27.1",
+  "additionalProperties": false,
+  "properties": {
+    "selector": {
+      "title": "Selector",
+      "type": "string"
+    },
+    "query": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Query"
+    },
+    "display_name": {
+      "title": "Display Name",
+      "type": "string"
+    },
+    "source_locator": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Locator"
+    },
+    "connection_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Connection Id"
+    }
+  },
+  "required": [
+    "selector",
+    "display_name"
+  ],
+  "title": "CanonicalJiraIssueFetchRequest",
+  "type": "object"
+}

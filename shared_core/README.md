@@ -1,38 +1,23 @@
-# SharedAgentCore
+# Shared Core
 
-Shared runtime assets for both `AuditFlow` and `OpsGraph`.
+本目录是 `SharedAgentCore` 的 vendored 副本，用于给 AuditFlow 提供共享运行时能力。
 
-## Layout
+## 主要职责
 
-- `docs/`: shared architecture, database, API, workflow, and prompt/tool contracts
-- `agent_platform/`: Python package for shared registries, schemas, and runtime services
-- `tests/`: shared unit tests
-- `scripts/`: helper scripts for vendoring this directory into a product repo
+- 工作流注册与执行
+- Prompt 装配
+- 工具执行器
+- 状态、checkpoint、回放与 outbox 存储
+- FastAPI 适配与通用 API 服务
+- 鉴权、持久化、事件、测试支撑
 
-## Intended Use
+## 目录说明
 
-This directory is the single source of truth for shared assets in the local workspace.
+- `agent_platform/`：共享运行时源码
+- `docs/`：共享层文档
+- `tests/`：共享层测试
+- `scripts/`：同步与 vendoring 脚本
 
-When `AuditFlow` and `OpsGraph` become separate GitHub repositories, vendoring should copy this whole directory into each repo as `shared_core/` or an equivalent path. That keeps each repo self-contained while preserving one local source directory during design and prototyping.
+## 使用方式
 
-## Workspace Sync
-
-From the multi-repo workspace root such as `D:\project`, sync the current shared core into both product repos with:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\SharedAgentCore\scripts\sync_workspace_repos.ps1
-```
-
-To sync only one product repo:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\SharedAgentCore\scripts\sync_workspace_repos.ps1 -RepoNames AuditFlow
-```
-
-## Local Validation
-
-From this directory:
-
-```powershell
-python -m unittest discover -s tests -t .
-```
+产品层通过各自的 `bootstrap.py` 调用共享层能力，不应在产品层重复实现工作流执行基础设施。

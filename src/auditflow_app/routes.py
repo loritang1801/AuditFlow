@@ -293,6 +293,7 @@ def create_fastapi_app(service: AuditFlowAppService, *, authorizer: AuditFlowAut
         raise FastAPIUnavailableError("fastapi is not installed") from exc
 
     app = FastAPI(title="AuditFlow API")
+    ap.attach_service_lifecycle(app, service=service, state_attr="auditflow_service")
     auth_service = getattr(service, "auth_service", None)
     route_authorizer = (
         authorizer
