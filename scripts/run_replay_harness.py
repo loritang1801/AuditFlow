@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
-from pathlib import Path
+from _local_runtime import ensure_src_on_path, resolve_database_url
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+ensure_src_on_path()
 
 from auditflow_app.bootstrap import build_replay_harness
 from auditflow_app.replay_harness import load_replay_baseline
@@ -78,7 +74,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     harness = build_replay_harness(
-        database_url=args.database_url,
+        database_url=resolve_database_url(args.database_url),
         baseline_root=args.baseline_root,
         report_root=args.report_root,
     )

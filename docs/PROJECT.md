@@ -64,7 +64,9 @@ AuditFlow/
 │   ├── run_ci_checks.py            # CI 入口脚本
 │   ├── run_demo_workflow.py        # 演示周期处理 + 导出流程
 │   ├── run_import_worker.py        # 导入 worker 启动脚本
+│   ├── run_api.py                  # 标准 API 启动脚本
 │   ├── run_replay_harness.py       # Replay Harness 脚本
+│   ├── run_runtime_smoke.py        # 本地 runtime / connector smoke
 │   ├── run_vector_search_benchmark.py # 向量检索基准脚本
 │   ├── generate_connector_schemas.py  # 连接器 Schema 生成脚本
 │   ├── render_ci_workflow.py       # 重新渲染 CI 配置
@@ -109,7 +111,7 @@ AuditFlow/
 补充说明：
 
 - `.tmp/` 在运行测试和 replay 时会被频繁使用，但其中存在临时数据库目录，且当前环境下部分路径权限受限，不适合作为稳定文档对象。
-- `shared_core/` 是事实上的共享平台内核，AuditFlow 通过 `vendor_shared_core.ps1` 从工作区的 `SharedAgentCore` 同步代码。
+- `shared_core/` 是事实上的共享平台内核，AuditFlow 通过 `vendor_shared_core.ps1` 从工作区的 `SharedAgentCore` 同步代码；运行时默认优先加载仓库内 vendored 版本，仅在 `AUDITFLOW_SHARED_CORE_SOURCE=workspace` 时切换到工作区副本。
 
 ---
 
@@ -634,33 +636,41 @@ cd D:\project\AuditFlow
 # 2. 安装依赖
 python -m pip install --upgrade pip
 python -m pip install -e .[api,connectors]
+python -m pip install -e .[api,connectors,ai]  # 如需 OpenAI 路径
 
-# 3. 运行测试
+# 3. 准备本地环境
+Copy-Item .env.example .env
+
+# 4. 运行测试
 python -m unittest discover -s tests -t .
 
-# 4. 生成连接器 Schema（可选）
+# 5. 生成连接器 Schema（可选）
 python .\scripts\generate_connector_schemas.py
 
-# 5. 运行演示流程
+# 6. 运行演示流程
 python .\scripts\run_demo_workflow.py
 
-# 6. 启动导入 worker（可选）
+# 7. 启动导入 worker（可选）
 python .\scripts\run_import_worker.py --poll --iterations 2 --max-idle-polls 1 --seed-upload
 
-# 7. 运行回放与基准（可选）
+# 8. 运行回放与本地 smoke（可选）
 python .\scripts\run_replay_harness.py
+python .\scripts\run_runtime_smoke.py
 python .\scripts\run_vector_search_benchmark.py --mode ann
+
+# 9. 启动 API
+python .\scripts\run_api.py --host 127.0.0.1 --port 8000
 ```
 
-> ⚠️ 待确认：仓库未提供 `.env.example`、`docker-compose.yml`、`Dockerfile` 或 Makefile。
+本地脚本默认使用仓库内 `.local/auditflow.db` 持久化数据库；如需覆盖，可以设置 `AUDITFLOW_DATABASE_URL` 或给脚本显式传入 `--database-url`。
 
-> ⚠️ 待确认：仓库未提供显式的 API 启动脚本；从 `src/auditflow_app/app.py` 可推断 FastAPI 以 `create_app()` 工厂暴露，理论上可通过 Uvicorn 的 factory 模式启动。
+运行时默认优先加载仓库内 `shared_core`；只有在 `AUDITFLOW_SHARED_CORE_SOURCE=workspace` 时才会切换到工作区 sibling `SharedAgentCore`。
 
 ---
 
 ## 9. 配置项说明
 
-当前仓库未提供 `.env.example`，以下配置项来自代码中的真实环境变量读取逻辑。
+仓库根目录提供了 `.env.example`；以下配置项为本地运行最常用的环境变量。
 
 ### 9.1 认证与会话
 
@@ -731,15 +741,13 @@ python -m pip install -e .[api,connectors]
 
 ### 10.2 生产环境启动
 
-> ⚠️ 待确认：仓库没有显式生产启动脚本、systemd 配置或容器入口。
-
-基于 `src/auditflow_app/app.py` 的 FastAPI 工厂形式，可以推断服务启动方式类似：
+仓库提供了标准 API 启动脚本：
 
 ```powershell
-uvicorn auditflow_app.app:create_app --factory --host 0.0.0.0 --port 8000
+python .\scripts\run_api.py --host 0.0.0.0 --port 8000
 ```
 
-上面的命令是基于现有 FastAPI 工厂结构推断，不是仓库内现成脚本。
+如需覆盖数据库，可附加 `--database-url sqlite+pysqlite:///./.local/auditflow.db`，或者通过 `AUDITFLOW_DATABASE_URL` 提前注入。
 
 ### 10.3 Docker 部署
 
@@ -762,7 +770,6 @@ CI 文件：`[auditflow-ci.yml](/D:/project/AuditFlow/.github/workflows/auditflo
   - `shared_core/**`
   - `tests/**`
   - `README.md`
-  - `INTEGRATIONS.md`
   - `PROMPT_TOOL.md`
 - 流水线阶段：
   1. Checkout
@@ -778,6 +785,7 @@ CI 文件：`[auditflow-ci.yml](/D:/project/AuditFlow/.github/workflows/auditflo
      - `scripts/run_demo_workflow.py`
      - `scripts/run_import_worker.py --poll --iterations 2 --max-idle-polls 1 --seed-upload`
      - `scripts/run_replay_harness.py`
+     - `scripts/run_runtime_smoke.py`
 
 ---
 
@@ -831,12 +839,10 @@ python .\scripts\run_replay_harness.py
 ## 12. 注意事项 & 已知问题
 
 - 未发现显式 `TODO` / `FIXME` / `HACK` 注释。
-- 当前仓库未提供 `.env.example`，新接手工程师需要直接从代码读取环境变量约定。
 - 当前仓库未提供正式迁移框架；数据库结构主要依赖启动时建表逻辑，不适合直接作为生产迁移策略。
-- 默认数据库是内存 SQLite，更适合测试、演示和脚本运行，不适合生产持久化。
+- 本地脚本默认使用 `.local/auditflow.db` 做持久化；如果直接在库级 API 上不传 `database_url`，仍会退回内存 SQLite。
 - 向量检索模式存在多级退回链路：`pgvector -> ann -> flat`，实际生效模式必须通过 runtime capability 检查。
 - 外部连接器在 `auto` 模式下允许退回本地模拟路径；如果要验证真实远程行为，必须显式配置 URL 模板和认证信息。
-- CI 的路径过滤仍包含 `INTEGRATIONS.md`，但当前仓库已不再保留该文件，这属于 CI 配置的轻微陈旧项。
-- FastAPI 服务工厂存在，但仓库没有标准化的 API 启动脚本、容器镜像定义或部署说明。
+- 默认加载仓库内 vendored `shared_core`；只有在显式设置 `AUDITFLOW_SHARED_CORE_SOURCE=workspace` 时才会切换到工作区共享仓库。
 
 文档已生成，共 12 个章节，覆盖 44 个 API 接口，19 张产品数据表。

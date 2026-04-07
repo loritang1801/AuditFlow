@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 import sys
-import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -20,12 +19,7 @@ from auditflow_app.replay_harness import (
     load_replay_baseline,
     load_replay_report,
 )
-
-
-def _create_repo_tempdir(prefix: str) -> Path:
-    temp_root = ROOT / ".tmp"
-    temp_root.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix=prefix, dir=temp_root))
+from tests._repo_temp import cleanup_repo_tempdir, create_repo_tempdir
 
 
 class AuditFlowReplayHarnessTests(unittest.TestCase):
@@ -50,8 +44,8 @@ class AuditFlowReplayHarnessTests(unittest.TestCase):
         )
 
     def test_capture_and_evaluate_demo_scenario_writes_artifacts(self) -> None:
-        tmp_dir = _create_repo_tempdir("auditflow-replay-")
-        self.addCleanup(shutil.rmtree, tmp_dir, ignore_errors=True)
+        tmp_dir = create_repo_tempdir("auditflow-replay-")
+        self.addCleanup(cleanup_repo_tempdir, tmp_dir)
         database_url = f"sqlite+pysqlite:///{(tmp_dir / 'auditflow.db').resolve().as_posix()}"
         baseline_root = tmp_dir / "baselines"
         report_root = tmp_dir / "reports"
@@ -81,8 +75,8 @@ class AuditFlowReplayHarnessTests(unittest.TestCase):
         self.assertTrue(Path(evaluation.markdown_report_path).exists())
 
     def test_capture_demo_baselines_can_run_subset(self) -> None:
-        tmp_dir = _create_repo_tempdir("auditflow-replay-suite-")
-        self.addCleanup(shutil.rmtree, tmp_dir, ignore_errors=True)
+        tmp_dir = create_repo_tempdir("auditflow-replay-suite-")
+        self.addCleanup(cleanup_repo_tempdir, tmp_dir)
         database_url = f"sqlite+pysqlite:///{(tmp_dir / 'auditflow.db').resolve().as_posix()}"
 
         harness = build_replay_harness(
@@ -99,8 +93,8 @@ class AuditFlowReplayHarnessTests(unittest.TestCase):
         self.assertTrue(all(Path(baseline.baseline_artifact_path).exists() for baseline in baselines))
 
     def test_saved_baseline_and_report_catalog_support_filtering_and_latest_lookup(self) -> None:
-        tmp_dir = _create_repo_tempdir("auditflow-replay-catalog-")
-        self.addCleanup(shutil.rmtree, tmp_dir, ignore_errors=True)
+        tmp_dir = create_repo_tempdir("auditflow-replay-catalog-")
+        self.addCleanup(cleanup_repo_tempdir, tmp_dir)
         database_url = f"sqlite+pysqlite:///{(tmp_dir / 'auditflow.db').resolve().as_posix()}"
         baseline_root = tmp_dir / "baselines"
         report_root = tmp_dir / "reports"

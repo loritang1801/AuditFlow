@@ -5,7 +5,6 @@ import io
 import json
 import shutil
 import sys
-import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,6 +44,7 @@ from auditflow_app.sample_payloads import (
     upload_import_command,
     workspace_create_command,
 )
+from tests._repo_temp import cleanup_repo_tempdir, create_repo_tempdir
 
 EXPECTED_SOC2_CONTROL_CODES = ["CC6.1", "CC6.2", "CC7.2", "CC8.1"]
 
@@ -118,13 +118,6 @@ def _zip_with_entries(entries: dict[str, str]) -> bytes:
         for entry_name, content in entries.items():
             archive.writestr(entry_name, content)
     return buffer.getvalue()
-
-
-def _create_repo_tempdir(prefix: str) -> Path:
-    temp_root = ROOT / ".tmp"
-    temp_root.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix=prefix, dir=temp_root))
-
 
 class AuditFlowServiceTests(unittest.TestCase):
     def test_create_workspace_and_cycle(self) -> None:
@@ -2283,7 +2276,7 @@ class AuditFlowServiceTests(unittest.TestCase):
             )
 
     def test_sqlalchemy_repository_persists_export_across_service_instances(self) -> None:
-        tmp_dir = _create_repo_tempdir("auditflow-db-")
+        tmp_dir = create_repo_tempdir("auditflow-db-")
         database_url = f"sqlite+pysqlite:///{(tmp_dir / 'auditflow.db').resolve().as_posix()}"
 
         service_one = build_app_service(database_url=database_url)
@@ -2309,4 +2302,4 @@ class AuditFlowServiceTests(unittest.TestCase):
             service_one.close()
             if service_two is not None:
                 service_two.close()
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            cleanup_repo_tempdir(tmp_dir)

@@ -19,6 +19,7 @@ def build_ci_config() -> ProductCiConfig:
         schema_paths=("schemas/connector_contracts",),
         smoke_commands=(
             ("{python}", "scripts/run_demo_workflow.py"),
+            ("{python}", "scripts/run_runtime_smoke.py"),
             (
                 "{python}",
                 "scripts/run_import_worker.py",
@@ -40,7 +41,6 @@ def build_ci_config() -> ProductCiConfig:
             "shared_core/**",
             "tests/**",
             "README.md",
-            "INTEGRATIONS.md",
             "PROMPT_TOOL.md",
         ),
     )

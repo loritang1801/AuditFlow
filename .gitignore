@@ -2,9 +2,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+.env
 dist/
 build/
 .tmp/
+.local/
 replay_baselines/
 replay_reports/
 shared_core/__pycache__/
